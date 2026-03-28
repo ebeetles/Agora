@@ -1,156 +1,166 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-// ─── SVG Portrait faces ──────────────────────────────────────────────────────
-// Editorial line-art style. Each face is drawn to match the agent's personality.
+// ─── Abstract face configs ────────────────────────────────────────────────────
+// No face outline — just floating marks. Mouth paths share identical SVG command
+// structure (M + C) so Framer Motion can interpolate between them.
 
-function EdgeFace() {
-  // Angular features, raised left brow, direct skeptical gaze, corners slightly down
+// Three abstract face presets — assigned by agent index, not by name
+const FACE_CONFIG_LIST = [
+  {
+    // Preset A: sharp raised arch on one side — skeptical asymmetry
+    leftBrow:  'M 23 33 C 26 28 33 27 38 29',
+    rightBrow: 'M 52 29 C 57 27 63 28 67 32',
+    leftEye:   { cx: 30, cy: 44, r: 5.5, pupilY: 0 },
+    rightEye:  { cx: 60, cy: 44, r: 5.5, pupilY: 0 },
+    mouth: {
+      resting:   'M 33 65 C 38 65 52 65 57 65',
+      talkOpen:  'M 33 63 C 38 70 52 70 57 63',
+      talkClose: 'M 33 64 C 38 67 52 67 57 64',
+    },
+  },
+  {
+    // Preset B: level brows, downward gaze — calm, measured
+    leftBrow:  'M 25 35 C 29 32 34 32 38 33',
+    rightBrow: 'M 52 33 C 56 32 61 32 65 35',
+    leftEye:   { cx: 31, cy: 47, r: 6,   pupilY: 1.5 },
+    rightEye:  { cx: 59, cy: 47, r: 6,   pupilY: 1.5 },
+    mouth: {
+      resting:   'M 34 66 C 38 67 52 67 56 66',
+      talkOpen:  'M 34 64 C 38 71 52 71 56 64',
+      talkClose: 'M 34 66 C 38 69 52 69 56 66',
+    },
+  },
+  {
+    // Preset C: high arched brows, upward gaze — open, energetic
+    leftBrow:  'M 20 33 C 24 27 31 26 37 28',
+    rightBrow: 'M 53 28 C 59 26 66 27 70 33',
+    leftEye:   { cx: 28, cy: 43, r: 6.5, pupilY: -1.5 },
+    rightEye:  { cx: 62, cy: 43, r: 6.5, pupilY: -1.5 },
+    mouth: {
+      resting:   'M 33 68 C 37 72 53 72 57 68',
+      talkOpen:  'M 33 64 C 37 73 53 73 57 64',
+      talkClose: 'M 33 66 C 37 71 53 71 57 66',
+    },
+  },
+]
+
+// ─── Abstract face SVG ───────────────────────────────────────────────────────
+
+function AbstractFace({ config, isSpeaking }) {
+  const { leftBrow, rightBrow, leftEye, rightEye, mouth } = config
+
   return (
-    <svg viewBox="0 0 90 100" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', height: '100%' }}>
-      {/* Face — angular jaw, defined cheekbones */}
-      <path
-        d="M45 9 C57 9 67 20 67 35 L65 61 C64 72 58 82 51 87 L45 91 39 87 C32 82 26 72 25 61 L23 35 C23 20 33 9 45 9Z"
-        fill="rgba(240,210,185,0.042)" stroke="#484848" strokeWidth="0.85"
+    <svg
+      viewBox="0 0 90 90"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ width: '100%', height: 90, display: 'block' }}
+    >
+      {/* Brows */}
+      <path d={leftBrow}  stroke="#5a5a5a" strokeWidth="1.15" strokeLinecap="round" />
+      <path d={rightBrow} stroke="#565656" strokeWidth="1.05" strokeLinecap="round" />
+
+      {/* Left eye: filled circle with a lighter pupil highlight */}
+      <circle cx={leftEye.cx} cy={leftEye.cy} r={leftEye.r} fill="#444444" />
+      <circle
+        cx={leftEye.cx + 0.8}
+        cy={leftEye.cy + leftEye.pupilY - 0.9}
+        r={leftEye.r * 0.38}
+        fill="#666"
       />
-      {/* Left brow — raised arch (skeptical) */}
-      <path d="M27 37 C30 32 35 31 40 33" stroke="#5a5a5a" strokeWidth="1.15" strokeLinecap="round" fill="none" />
-      {/* Right brow — more level, slightly lower */}
-      <path d="M50 33 C56 31 61 33 65 37" stroke="#5a5a5a" strokeWidth="1.1" strokeLinecap="round" fill="none" />
-      {/* Left eye — slightly narrowed, direct gaze */}
-      <path d="M28 43 Q34 39.5 40 43" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <path d="M28 43 Q34 46 40 43" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <circle cx="34" cy="43" r="1.9" fill="#3a3a3a" />
-      <circle cx="34.7" cy="42.3" r="0.6" fill="#5a5a5a" />
+
       {/* Right eye */}
-      <path d="M50 43 Q56 39.5 62 43" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <path d="M50 43 Q56 46 62 43" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <circle cx="56" cy="43" r="1.9" fill="#3a3a3a" />
-      <circle cx="56.7" cy="42.3" r="0.6" fill="#5a5a5a" />
-      {/* Nose — angular, clean strokes */}
-      <path d="M44 50 L42 60 L39 61" stroke="#484848" strokeWidth="0.8" strokeLinecap="round" fill="none" />
-      <path d="M46 50 L48 60 L51 61" stroke="#484848" strokeWidth="0.8" strokeLinecap="round" fill="none" />
-      {/* Mouth — skeptical, corners drop slightly */}
-      <path d="M37 71 C40 70 43 71 45 71 C47 71 50 70 53 71" stroke="#525252" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <path d="M37 71 L36 73" stroke="#525252" strokeWidth="0.8" strokeLinecap="round" />
-      <path d="M53 71 L54 73" stroke="#525252" strokeWidth="0.8" strokeLinecap="round" />
-      {/* Neck suggestion */}
-      <path d="M40 90 L39 98" stroke="#3e3e3e" strokeWidth="0.7" strokeLinecap="round" />
-      <path d="M50 90 L51 98" stroke="#3e3e3e" strokeWidth="0.7" strokeLinecap="round" />
+      <circle cx={rightEye.cx} cy={rightEye.cy} r={rightEye.r} fill="#444444" />
+      <circle
+        cx={rightEye.cx + 0.8}
+        cy={rightEye.cy + rightEye.pupilY - 0.9}
+        r={rightEye.r * 0.38}
+        fill="#666"
+      />
+
+      {/* Mouth — morphs while speaking */}
+      <motion.path
+        d={mouth.resting}
+        animate={{
+          d: isSpeaking
+            ? [mouth.talkOpen, mouth.talkClose, mouth.talkOpen]
+            : mouth.resting,
+        }}
+        transition={{
+          d: isSpeaking
+            ? { duration: 0.38, repeat: Infinity, ease: 'easeInOut' }
+            : { duration: 0.28, ease: 'easeOut' },
+        }}
+        stroke="#545454"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        fill="none"
+      />
     </svg>
   )
 }
 
-function SageFace() {
-  // Rounder softer face, level brows, downward contemplative gaze, neutral mouth
-  return (
-    <svg viewBox="0 0 90 100" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', height: '100%' }}>
-      {/* Face — full oval, softer jaw */}
-      <path
-        d="M45 11 C58 11 67 23 67 38 L66 62 C65 74 58 84 50 88 L45 91 40 88 C32 84 25 74 24 62 L23 38 C23 23 32 11 45 11Z"
-        fill="rgba(240,210,185,0.042)" stroke="#484848" strokeWidth="0.85"
-      />
-      {/* Left brow — soft, gently inward */}
-      <path d="M28 38 C32 36 36 36 40 37" stroke="#585858" strokeWidth="1.05" strokeLinecap="round" fill="none" />
-      {/* Right brow — matching, level */}
-      <path d="M50 37 C54 36 58 36 62 38" stroke="#585858" strokeWidth="1.05" strokeLinecap="round" fill="none" />
-      {/* Left eye — iris sits lower (downward gaze) */}
-      <path d="M29 44 Q35 41 41 44" stroke="#535353" strokeWidth="0.9" strokeLinecap="round" fill="none" />
-      <path d="M29 44 Q35 48 41 44" stroke="#535353" strokeWidth="0.9" strokeLinecap="round" fill="none" />
-      <circle cx="35" cy="45" r="2.1" fill="#3a3a3a" />
-      <circle cx="35.7" cy="44.4" r="0.65" fill="#5a5a5a" />
-      {/* Right eye */}
-      <path d="M49 44 Q55 41 61 44" stroke="#535353" strokeWidth="0.9" strokeLinecap="round" fill="none" />
-      <path d="M49 44 Q55 48 61 44" stroke="#535353" strokeWidth="0.9" strokeLinecap="round" fill="none" />
-      <circle cx="55" cy="45" r="2.1" fill="#3a3a3a" />
-      <circle cx="55.7" cy="44.4" r="0.65" fill="#5a5a5a" />
-      {/* Nose — rounded, gentle curve */}
-      <path d="M45 50 C44.5 54 43 57 41 59 C43 62 47 62 49 59 C47 57 45.5 54 45 50" stroke="#484848" strokeWidth="0.75" fill="rgba(240,210,185,0.025)" strokeLinecap="round" />
-      {/* Mouth — gently neutral, barely a hint of upturn */}
-      <path d="M38 72 C41 72 43 73 45 73 C47 73 49 72 52 72" stroke="#525252" strokeWidth="0.9" strokeLinecap="round" fill="none" />
-      {/* Neck */}
-      <path d="M40 90 L39 98" stroke="#3e3e3e" strokeWidth="0.7" strokeLinecap="round" />
-      <path d="M50 90 L51 98" stroke="#3e3e3e" strokeWidth="0.7" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function SparkFace() {
-  // Wider open face, both brows raised, upward gaze, clear smile
-  return (
-    <svg viewBox="0 0 90 100" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', height: '100%' }}>
-      {/* Face — slightly wider, open, rounded at jaw */}
-      <path
-        d="M45 10 C59 10 69 21 69 36 L68 59 C67 71 60 81 51 86 L45 90 39 86 C30 81 23 71 22 59 L21 36 C21 21 31 10 45 10Z"
-        fill="rgba(240,210,185,0.042)" stroke="#484848" strokeWidth="0.85"
-      />
-      {/* Left brow — raised high, arched expressively */}
-      <path d="M25 38 C29 32 35 31 40 34" stroke="#5a5a5a" strokeWidth="1.15" strokeLinecap="round" fill="none" />
-      {/* Right brow — raised matching */}
-      <path d="M50 34 C55 31 61 32 65 38" stroke="#5a5a5a" strokeWidth="1.15" strokeLinecap="round" fill="none" />
-      {/* Left eye — open wide, pupil higher (upward gaze) */}
-      <path d="M25 44 Q32 40 39 44" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <path d="M25 44 Q32 49 39 44" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <circle cx="32" cy="43" r="2.2" fill="#3a3a3a" />
-      <circle cx="32.8" cy="42.2" r="0.65" fill="#5a5a5a" />
-      {/* Right eye */}
-      <path d="M51 44 Q58 40 65 44" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <path d="M51 44 Q58 49 65 44" stroke="#535353" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <circle cx="58" cy="43" r="2.2" fill="#3a3a3a" />
-      <circle cx="58.8" cy="42.2" r="0.65" fill="#5a5a5a" />
-      {/* Nose — simple, open */}
-      <path d="M45 50 L43 60 L41 61" stroke="#484848" strokeWidth="0.8" strokeLinecap="round" fill="none" />
-      <path d="M45 50 L47 60 L49 61" stroke="#484848" strokeWidth="0.8" strokeLinecap="round" fill="none" />
-      {/* Mouth — clear smile, corners lift */}
-      <path d="M36 71 C39 75 42 76 45 76 C48 76 51 75 54 71" stroke="#525252" strokeWidth="0.95" strokeLinecap="round" fill="none" />
-      <path d="M36 71 L35.5 69" stroke="#525252" strokeWidth="0.8" strokeLinecap="round" />
-      <path d="M54 71 L54.5 69" stroke="#525252" strokeWidth="0.8" strokeLinecap="round" />
-      {/* Neck */}
-      <path d="M40 89 L39 98" stroke="#3e3e3e" strokeWidth="0.7" strokeLinecap="round" />
-      <path d="M50 89 L51 98" stroke="#3e3e3e" strokeWidth="0.7" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-const FACE_MAP = { Edge: EdgeFace, Sage: SageFace, Spark: SparkFace }
-
-// ─── Sound wave ──────────────────────────────────────────────────────────────
+// ─── Sound wave (below portrait) ─────────────────────────────────────────────
 
 function SoundWave({ color }) {
   const bars = [
-    { height: [3, 7, 3], duration: 0.48 },
-    { height: [5, 8, 4], duration: 0.56 },
-    { height: [3, 6, 3], duration: 0.52 },
+    { heights: [2, 7, 2], duration: 0.46 },
+    { heights: [4, 8, 3], duration: 0.54 },
+    { heights: [2, 6, 2], duration: 0.50 },
   ]
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 3, height: 10 }}>
       {bars.map((b, i) => (
         <motion.div
           key={i}
-          style={{ width: 4, borderRadius: 2, backgroundColor: color, originY: 1 }}
-          animate={{ height: b.height.map((h) => `${h}px`) }}
-          transition={{
-            duration: b.duration,
-            repeat: Infinity,
-            delay: i * 0.14,
-            ease: 'easeInOut',
-          }}
+          style={{ width: 4, borderRadius: 2, backgroundColor: color }}
+          animate={{ height: b.heights.map((h) => `${h}px`) }}
+          transition={{ duration: b.duration, repeat: Infinity, delay: i * 0.13, ease: 'easeInOut' }}
         />
       ))}
     </div>
   )
 }
 
-// ─── Agent card ──────────────────────────────────────────────────────────────
+// ─── Agent card ───────────────────────────────────────────────────────────────
 
-function AgentCard({ agent, isSpeaking, isThinking, reactBump }) {
-  const FaceComponent = FACE_MAP[agent.name] || SageFace
+function AgentCard({ agent, agentIndex, isSpeaking, isThinking, reactBump }) {
+  const config = FACE_CONFIG_LIST[agentIndex % FACE_CONFIG_LIST.length]
 
-  const borderColor = isThinking
-    ? `${agent.color}77`
+  const borderStyle = isThinking
+    ? `0.5px dashed ${agent.color}77`
     : isSpeaking
-      ? agent.color
-      : '#2a2a2a'
+      ? `1px solid ${agent.color}`
+      : '0.5px solid #2a2a2a'
+
+  // Card animation: bob when speaking, slow drift when thinking, breathe when idle
+  let cardAnimate, cardTransition
+  if (reactBump) {
+    cardAnimate   = { rotate: -2, y: 0, scale: 1 }
+    cardTransition = { duration: 0.28, ease: 'easeOut' }
+  } else if (isSpeaking) {
+    cardAnimate   = { rotate: 0, y: [0, -6, 0], scale: 1 }
+    cardTransition = {
+      y:      { duration: 0.44, repeat: Infinity, ease: 'easeInOut' },
+      rotate: { duration: 0.15 },
+      scale:  { duration: 0.15 },
+    }
+  } else if (isThinking) {
+    cardAnimate   = { rotate: 0, y: [0, -2, 0], scale: 1 }
+    cardTransition = {
+      y:      { duration: 1.8, repeat: Infinity, ease: 'easeInOut' },
+      rotate: { duration: 0.15 },
+      scale:  { duration: 0.15 },
+    }
+  } else {
+    cardAnimate   = { rotate: 0, y: 0, scale: [0.98, 1, 0.98] }
+    cardTransition = {
+      scale:  { duration: 3, repeat: Infinity, ease: 'easeInOut' },
+      rotate: { duration: 0.2 },
+      y:      { duration: 0.25 },
+    }
+  }
 
   return (
     <motion.div
@@ -159,44 +169,31 @@ function AgentCard({ agent, isSpeaking, isThinking, reactBump }) {
         height: 110,
         backgroundColor: '#141414',
         borderRadius: 12,
-        border: `${isSpeaking ? '1px' : '0.5px'} ${isThinking ? 'dashed' : 'solid'} ${borderColor}`,
+        border: borderStyle,
         overflow: 'hidden',
-        position: 'relative',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'flex-start',
         flexShrink: 0,
       }}
-      animate={{
-        rotate: reactBump ? -2 : 0,
-        scale:
-          reactBump || isSpeaking || isThinking
-            ? 1
-            : [0.98, 1, 0.98],
-      }}
-      transition={
-        reactBump
-          ? { rotate: { duration: 0.3, ease: 'easeOut' }, scale: { duration: 0.2 } }
-          : isSpeaking || isThinking
-            ? { duration: 0.2 }
-            : { scale: { duration: 3, repeat: Infinity, ease: 'easeInOut' }, rotate: { duration: 0.2 } }
-      }
+      animate={cardAnimate}
+      transition={cardTransition}
     >
-      {/* Portrait area */}
+      {/* Portrait — dims while thinking */}
       <motion.div
-        style={{ width: '100%', height: 90, padding: '6px 4px 0' }}
-        animate={isThinking ? { opacity: [0.7, 1, 0.7] } : { opacity: 1 }}
+        style={{ width: '100%' }}
+        animate={isThinking ? { opacity: [0.65, 1, 0.65] } : { opacity: 1 }}
         transition={
           isThinking
             ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' }
             : { duration: 0.3 }
         }
       >
-        <FaceComponent />
+        <AbstractFace config={config} isSpeaking={isSpeaking} />
       </motion.div>
 
-      {/* Sound wave or spacer */}
+      {/* Sound wave zone */}
       <div
         style={{
           height: 20,
@@ -213,7 +210,7 @@ function AgentCard({ agent, isSpeaking, isThinking, reactBump }) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
+              transition={{ duration: 0.18 }}
             >
               <SoundWave color={agent.color} />
             </motion.div>
@@ -253,10 +250,7 @@ export function AgentPresence({
       setCaptionVisible(true)
       const tHold = window.setTimeout(() => setCaptionVisible(false), 2000)
       const tClear = window.setTimeout(() => setHoldText(''), 2500)
-      return () => {
-        clearTimeout(tHold)
-        clearTimeout(tClear)
-      }
+      return () => { clearTimeout(tHold); clearTimeout(tClear) }
     }
   }, [slice.captionEndTick, slice.lastCaptionFull])
 
@@ -293,21 +287,16 @@ export function AgentPresence({
         translateY: '-50%',
       }}
       initial={{ opacity: 0, y: 20 }}
-      animate={{
-        opacity: 1,
-        y: slice.offset.y,
-        x: slice.offset.x,
-      }}
+      animate={{ opacity: 1, y: slice.offset.y, x: slice.offset.x }}
       transition={{
         opacity: { delay: entryIndex * 0.3, duration: 0.35 },
-        y: entryIndex === 0 && slice.offset.y === 0
-          ? { delay: entryIndex * 0.3, duration: 0.35, type: 'tween', ease: 'easeOut' }
-          : offsetTransition || { type: 'tween', duration: 2, ease: 'easeInOut' },
+        y: offsetTransition || { type: 'tween', duration: 2, ease: 'easeInOut' },
         x: offsetTransition || { type: 'tween', duration: 2, ease: 'easeInOut' },
       }}
     >
       <AgentCard
         agent={agent}
+        agentIndex={entryIndex}
         isSpeaking={slice.isSpeaking}
         isThinking={slice.isThinking}
         reactBump={reactBump}
@@ -320,7 +309,7 @@ export function AgentPresence({
         {agent.name}
       </p>
       <p
-        className="mt-0.5 max-w-[100px] truncate text-center text-[10px] text-[#666]"
+        className="mt-0.5 max-w-[100px] truncate text-center text-[10px] text-[#555]"
         title={agent.personality}
       >
         {agent.personality}
@@ -339,10 +328,10 @@ export function AgentPresence({
             {words.map((w, i) => (
               <motion.span
                 key={`${slice.captionEndTick}-${i}-${w}`}
-                className="inline text-[11px] text-white"
-                style={{ opacity: 0.85 }}
+                className="inline text-[11px]"
+                style={{ color: 'rgba(255,255,255,0.8)' }}
                 initial={{ opacity: 0 }}
-                animate={{ opacity: 0.85 }}
+                animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.04 }}
               >

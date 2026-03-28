@@ -33,8 +33,36 @@ from livekit.agents import stt
 from livekit.plugins import cartesia, deepgram
 from openai import AsyncOpenAI
 
-from config import AGENT_IDENTITIES, ROOM_NAME, TOPIC, AgentConfig, build_agents
+from config import ROOM_NAME, TOPIC, AgentConfig, build_agents
 from discussion_state import DiscussionState, HistoryEntry, StateSnapshot, detect_addressed
+
+# Voices to cycle through when building agents from AGENTS_JSON
+_OPENAI_VOICES = ["onyx", "echo", "fable", "alloy", "nova"]
+_CARTESIA_VOICES = [
+    "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+    "f31cc6a7-c1e8-4764-980c-60a361443dd1",
+    "a167e0f3-df7e-4d52-a9c3-f949145efdab",
+    "b7d50908-b17c-442d-ad8d-810c63997ed9",
+    "726d5ae5-055f-4c3d-8355-d9677de68937",
+]
+
+
+def _build_agents_from_json(agents_raw: list[dict], topic: str) -> list[AgentConfig]:
+    """Convert a frontend agent config array into AgentConfig objects."""
+    configs = []
+    for i, a in enumerate(agents_raw):
+        name = a.get("name", f"Agent{i+1}")
+        identity = name.lower().replace(" ", "_")
+        configs.append(AgentConfig(
+            identity=identity,
+            name=name,
+            voice_id=_CARTESIA_VOICES[i % len(_CARTESIA_VOICES)],
+            openai_voice=_OPENAI_VOICES[i % len(_OPENAI_VOICES)],
+            disposition=a.get("disposition", ""),
+            ui_color=a.get("color", "#7A9E87"),
+            system_prompt=a.get("systemPrompt", ""),
+        ))
+    return configs
 
 _backend_dir = Path(__file__).resolve().parent
 for _env in (".env", ".env.local"):
@@ -43,12 +71,9 @@ for _env in (".env", ".env.local"):
 # Room name is fixed per orchestrator process (Express sets ROOM_NAME).
 _RUNTIME_ROOM: str = os.getenv("ROOM_NAME") or ROOM_NAME
 
-# Normalized UI positions (must match frontend layout for drift hints).
-_UI_POS: dict[str, tuple[float, float]] = {
-    "edge": (0.28, 0.32),
-    "sage": (0.72, 0.32),
-    "spark": (0.50, 0.56),
-}
+# Normalized UI positions for drift hint calculations.
+# Keyed by agent identity and populated at runtime in DiscussionOrchestrator.run().
+_UI_POS: dict[str, tuple[float, float]] = {}
 _USER_POS: tuple[float, float] = (0.50, 0.82)
 
 
@@ -120,8 +145,8 @@ def _join_stream_segments(chunks: list[str]) -> str:
 
 
 def _drift_pixels(from_id: str, to_id: str, magnitude: float) -> tuple[int, int]:
-    fx, fy = _UI_POS[from_id]
-    tx, ty = _USER_POS if to_id == "user" else _UI_POS[to_id]
+    fx, fy = _UI_POS.get(from_id, (0.5, 0.5))
+    tx, ty = _USER_POS if to_id == "user" else _UI_POS.get(to_id, (0.5, 0.5))
     dxn, dyn = tx - fx, ty - fy
     n = math.hypot(dxn, dyn) or 1.0
     ux, uy = dxn / n, dyn / n
@@ -469,7 +494,24 @@ class DiscussionOrchestrator:
     def __init__(self) -> None:
         self._room_name = _RUNTIME_ROOM
         self._topic = os.getenv("TOPIC") or TOPIC
-        self._agent_configs: list[AgentConfig] = build_agents(self._topic)
+        _agents_json_str = os.getenv("AGENTS_JSON", "").strip()
+        if _agents_json_str:
+            try:
+                _agents_raw = json.loads(_agents_json_str)
+                self._agent_configs: list[AgentConfig] = _build_agents_from_json(
+                    _agents_raw, self._topic
+                )
+            except Exception:
+                log.exception("Failed to parse AGENTS_JSON; falling back to defaults")
+                self._agent_configs = build_agents(self._topic)
+        else:
+            self._agent_configs = build_agents(self._topic)
+        # Runtime identities — always reflects the actual agents in this room,
+        # unlike the static AGENT_IDENTITIES constant from config.py which only
+        # knows about the hardcoded edge/sage/spark cast.
+        self._agent_identities: frozenset[str] = frozenset(
+            a.identity for a in self._agent_configs
+        )
         self.state = DiscussionState(
             topic=self._topic,
             agent_names=[a.name for a in self._agent_configs],
@@ -543,7 +585,7 @@ class DiscussionOrchestrator:
                 await self.apply_topic_update(cmd["topic"])
 
     def _on_room_data(self, packet: rtc.DataPacket) -> None:
-        if packet.participant and packet.participant.identity in AGENT_IDENTITIES:
+        if packet.participant and packet.participant.identity in self._agent_identities:
             return
         try:
             msg = json.loads(packet.data.decode("utf-8"))
@@ -651,12 +693,24 @@ class DiscussionOrchestrator:
                 self.workers[cfg.identity] = w
                 log.info("[%s] connected to room '%s'", cfg.name, self._room_name)
 
+            # Build UI positions dynamically so drift hints work for any cast size.
+            _UI_POS.clear()
+            _positions_by_count = {
+                2: [(0.35, 0.35), (0.65, 0.35)],
+                3: [(0.28, 0.32), (0.72, 0.32), (0.50, 0.56)],
+                4: [(0.25, 0.30), (0.75, 0.30), (0.35, 0.60), (0.65, 0.60)],
+            }
+            n = len(self._agent_configs)
+            positions = _positions_by_count.get(n) or _positions_by_count[3][:n] or [(0.5, 0.4)]
+            for i, cfg in enumerate(self._agent_configs):
+                _UI_POS[cfg.identity] = positions[i] if i < len(positions) else (0.5, 0.4)
+
             primary = self._primary
             asyncio.create_task(self._stdin_command_loop())
             self._sweep_remote_subscriptions_post_connect()
 
             for p in primary.room.remote_participants.values():
-                if p.identity not in AGENT_IDENTITIES:
+                if p.identity not in self._agent_identities:
                     self._human_count += 1
             if self._human_count > 0:
                 self._note_human_activity()
@@ -689,11 +743,11 @@ class DiscussionOrchestrator:
             self._primary.config.identity,
             participant.identity,
             participant.name,
-            participant.identity in AGENT_IDENTITIES,
+            participant.identity in self._agent_identities,
             len(participant.track_publications),
         )
         self._ensure_remote_audio_subscribed(self._primary, participant)
-        if participant.identity in AGENT_IDENTITIES:
+        if participant.identity in self._agent_identities:
             return
         log.info("Human '%s' joined.", participant.name or participant.identity)
         self._human_count += 1
@@ -703,7 +757,7 @@ class DiscussionOrchestrator:
     def _on_participant_disconnected(
         self, participant: rtc.RemoteParticipant
     ) -> None:
-        if participant.identity in AGENT_IDENTITIES:
+        if participant.identity in self._agent_identities:
             return
         log.info("Human '%s' left.", participant.name or participant.identity)
         self._human_count = max(0, self._human_count - 1)
@@ -726,10 +780,10 @@ class DiscussionOrchestrator:
             return
         self._discussion_started = True
         log.info("Human joined — starting discussion.")
-        edge = self.workers.get("edge")
-        if edge:
+        opener = next(iter(self.workers.values()), None)
+        if opener:
             self._active_turn_task = asyncio.create_task(
-                self._execute_turn(edge, is_opener=True)
+                self._execute_turn(opener, is_opener=True)
             )
 
     # ── idle watchdog ────────────────────────────────────────────────
@@ -792,7 +846,7 @@ class DiscussionOrchestrator:
                         if (
                             pub.kind == rtc.TrackKind.KIND_AUDIO
                             and pub.track is not None
-                            and participant.identity not in AGENT_IDENTITIES
+                            and participant.identity not in self._agent_identities
                         ):
                             self._schedule_human_stt(pub.track, pub, participant)
 
@@ -810,7 +864,7 @@ class DiscussionOrchestrator:
             publication.kind,
             publication.sid,
             publication.subscribed,
-            participant.identity in AGENT_IDENTITIES,
+            participant.identity in self._agent_identities,
         )
         if publication.kind != rtc.TrackKind.KIND_AUDIO:
             return
@@ -866,7 +920,7 @@ class DiscussionOrchestrator:
             owner.config.identity,
             participant.identity,
             participant.name,
-            participant.identity in AGENT_IDENTITIES,
+            participant.identity in self._agent_identities,
         )
         self._ensure_remote_audio_subscribed(owner, participant)
 
@@ -877,7 +931,7 @@ class DiscussionOrchestrator:
         participant: rtc.RemoteParticipant,
     ) -> None:
         """Start Deepgram for human audio only; dedupe by track sid."""
-        in_agent = participant.identity in AGENT_IDENTITIES
+        in_agent = participant.identity in self._agent_identities
         log.info(
             "[stt/schedule] remote_identity=%r remote_name=%r in_agent_identities=%s "
             "track_sid=%s pub_sid=%s kind=%s",
@@ -927,7 +981,7 @@ class DiscussionOrchestrator:
             track.sid,
             publication.sid,
             publication.subscribed,
-            participant.identity in AGENT_IDENTITIES,
+            participant.identity in self._agent_identities,
         )
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return

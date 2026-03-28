@@ -46,11 +46,6 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    if args.identity in ("edge", "sage", "spark"):
-        raise SystemExit(
-            f"identity {args.identity!r} is reserved for agents. "
-            "Use e.g. you, alex, or listener."
-        )
 
     token = (
         api.AccessToken()

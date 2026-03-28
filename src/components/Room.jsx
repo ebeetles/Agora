@@ -101,36 +101,47 @@ function HistoryPanel({ transcript, open, onOpen, onClose }) {
 
   return (
     <>
-      {/* Collapsed tab — always visible when panel is closed */}
-      <AnimatePresence>
-        {!open && (
-          <motion.button
-            key="tab"
-            onClick={onOpen}
-            className="fixed z-50 flex items-center justify-center"
-            style={{
-              right: 0,
-              top: '50%',
-              width: 36,
-              height: 60,
-              backgroundColor: '#111',
-              borderRadius: '8px 0 0 8px',
-              border: '0.5px solid #252525',
-              borderRight: 'none',
-              color: '#444',
-              cursor: 'pointer',
-              transform: 'translateY(-50%)',
-            }}
-            initial={{ opacity: 0, x: 36 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 36 }}
-            transition={{ duration: 0.2 }}
-            aria-label="Open conversation history"
-          >
-            <ChevronLeft />
-          </motion.button>
-        )}
-      </AnimatePresence>
+      {/* Collapsed tab — fixed position wrapper handles centering (CSS transform is
+          not usable on motion elements — Framer Motion owns that property) */}
+      <div
+        style={{
+          position: 'fixed',
+          right: 0,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          zIndex: 50,
+          pointerEvents: open ? 'none' : 'auto',
+        }}
+      >
+        <AnimatePresence>
+          {!open && (
+            <motion.button
+              key="tab"
+              onClick={onOpen}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 36,
+                height: 60,
+                backgroundColor: '#111',
+                borderRadius: '8px 0 0 8px',
+                border: '0.5px solid #252525',
+                borderRight: 'none',
+                color: '#444',
+                cursor: 'pointer',
+              }}
+              initial={{ opacity: 0, x: 36 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 36 }}
+              transition={{ duration: 0.22 }}
+              aria-label="Open conversation history"
+            >
+              <ChevronLeft />
+            </motion.button>
+          )}
+        </AnimatePresence>
+      </div>
 
       {/* Expanded panel — overlays on top of canvas, does not reflow layout */}
       <AnimatePresence>
