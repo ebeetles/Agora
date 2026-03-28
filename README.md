@@ -1,23 +1,35 @@
 # Agora
 
-**Live, multi-agent voice discussions** in the browser. You pick a topic, join a LiveKit room, and talk with **Edge**, **Sage**, and **Spark**—each with its own voice and point of view—while a React UI shows presence, motion, and the running transcript.
+**Agora** is a browser-based **live voice roundtable**: you choose a topic, Agora **designs a cast of 2–4 AI participants** (names, perspectives, voices, and motion “personalities”), and you **join the same LiveKit room** to talk with them in real time. A React UI shows **who is speaking**, **live captions**, a **running transcript**, and a **topic** you can refine mid-session.
 
-Pipeline under the hood: **Deepgram** (speech-to-text) → **Anthropic Claude** (reasoning) → **OpenAI or Cartesia** (text-to-speech), orchestrated from Python and wired through [LiveKit](https://livekit.io/).
+Under the hood: **Deepgram** (speech-to-text) → **Anthropic Claude** (reasoning and room configuration) → **OpenAI or Cartesia** (text-to-speech), coordinated by **Python** (`multi_agent.py`) and **Express** (`server.js`), with audio over **LiveKit**.
+
+---
+
+## What you do (end-to-end)
+
+1. **Landing** — Enter any topic (a decision, debate, or question). Optional example pills nudge you toward a first try.
+2. **Configure** — The app calls **`POST /configure-room`**. Claude proposes a **room mood**, **topic framing**, and a **cast** (each agent gets colors, a short disposition, visual personality axes for the UI, and a full system prompt).
+3. **Preview** — Review the lineup: **edit** names and dispositions, **add or remove** agents, or **regenerate** the whole room from the same topic. When you are ready, you **launch** the session.
+4. **Room** — The server creates a **unique LiveKit room**, spawns **`multi_agent.py`** with your topic and cast, and returns a **participant token**. You connect the **microphone**, hear the agents, and speak naturally. The UI syncs **speaking / thinking** state and **captions** from the agents via LiveKit data messages. You can **change the discussion topic** in place (the server forwards it to the Python process).
+
+If you skip the AI-designed cast (e.g. API failure or future paths), the backend can fall back to the **default three-agent** configuration (**Edge**, **Sage**, **Spark**) from `backend/config.py`.
 
 ---
 
 ## Why it’s interesting
 
-- **Real-time audio** — Agents and you share one room; interruptions and turn-taking are handled in code (urgency scoring, room locks, idle timeouts).
-- **One command to hack** — `./start.sh` installs deps, boots the API on **:3001**, and runs Vite with `/api` proxied for a smooth dev loop.
-- **Two ways to run agents** — The **web app** spawns `multi_agent.py` per room via Express. For manual testing (fixed room `agora-discussion`, `join_room.html`, `mint_token.py`), see [**backend/README.md**](backend/README.md).
+- **Topic-native casts** — Agents are generated for *your* topic, not a single fixed script.
+- **Real-time audio** — Shared room, interruption handling, urgency-based turn-taking, room locks, and idle behavior are implemented in `multi_agent.py` (see [**backend/README.md**](backend/README.md) for behavior details).
+- **One command for local dev** — `./start.sh` installs dependencies, starts the API on **:3001**, and runs Vite with **`/api` proxied** to Express.
+- **Two ways to run agents** — The **web app** is the primary path (per-room processes). For a **fixed room** (`agora-discussion`), **`join_room.html`**, and **`mint_token.py`**, use [**backend/README.md**](backend/README.md).
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph browser [Browser]
     UI[Vite + React]
   end
@@ -33,9 +45,10 @@ flowchart LR
     AN[Anthropic]
     TTS[OpenAI / Cartesia]
   end
-  UI -->|"/api/* proxy"| API
-  API -->|spawn ROOM_NAME TOPIC| MA
-  UI -->|WebRTC + data| LK
+  UI -->|"/api/* → Express"| API
+  API -->|configure-room, fill prompts| AN
+  API -->|spawn ROOM_NAME TOPIC AGENTS_JSON| MA
+  UI -->|WebRTC + data channels| LK
   MA --> LK
   MA --> DG
   MA --> AN
@@ -48,14 +61,16 @@ flowchart LR
 
 - **Node.js** 18+ and **npm**
 - **Python** 3.10+
-- [LiveKit Cloud](https://cloud.livekit.io/) (or compatible) project
-- API keys: [Deepgram](https://console.deepgram.com/), [Anthropic](https://console.anthropic.com/), and **either** [OpenAI](https://platform.openai.com/) **or** [Cartesia](https://play.cartesia.ai/) for TTS (see `TTS_PROVIDER` below)
+- A [LiveKit Cloud](https://cloud.livekit.io/) (or compatible) project
+- API keys: [Deepgram](https://console.deepgram.com/), [Anthropic](https://console.anthropic.com/), and **either** [OpenAI](https://platform.openai.com/) **or** [Cartesia](https://play.cartesia.ai/) for TTS (`TTS_PROVIDER` in `.env`)
+
+**First time running the Python agents:** from `backend/`, after `pip install -r requirements.txt`, run `python agent.py download-files` if you need Silero VAD assets (see backend README).
 
 ---
 
 ## Quick start
 
-1. **Clone and configure environment**
+1. **Clone and configure**
 
    ```bash
    git clone https://github.com/ebeetles/Agora.git
@@ -63,7 +78,7 @@ flowchart LR
    cp backend/.env.example backend/.env
    ```
 
-   Edit **`backend/.env`**. `LIVEKIT_URL` must be the **WebSocket** URL (`wss://…`), not the HTTP dashboard URL.
+   Edit **`backend/.env`**. **`LIVEKIT_URL`** must be the **WebSocket** URL (`wss://…`), not an HTTP dashboard URL.
 
 2. **Run everything**
 
@@ -72,45 +87,72 @@ flowchart LR
    ./start.sh
    ```
 
-   Then open the URL Vite prints (usually **http://localhost:5173**). Enter a topic, connect your mic, and start talking.
+   Open the URL Vite prints (usually **http://localhost:5173**). Walk through **topic → preview → join**, allow the microphone when prompted, and start talking.
 
 ---
 
 ## Environment variables
 
-All secrets live in **`backend/.env`** (gitignored). Copy from [`backend/.env.example`](backend/.env.example).
+Secrets live in **`backend/.env`** (gitignored). Copy from [`backend/.env.example`](backend/.env.example).
 
 | Variable | Purpose |
 |----------|---------|
 | `LIVEKIT_URL` | WebSocket URL for your LiveKit project |
-| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | Server SDK + token minting |
-| `DEEPGRAM_API_KEY` | Streaming STT |
-| `ANTHROPIC_API_KEY` | Claude |
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | Server SDK access and JWT minting |
+| `DEEPGRAM_API_KEY` | Streaming STT in `multi_agent.py` |
+| `ANTHROPIC_API_KEY` | Claude in Python **and** room configuration / prompt fill in `server.js` |
 | `TTS_PROVIDER` | `openai` (default) or `cartesia` |
 | `OPENAI_API_KEY` | Required when `TTS_PROVIDER=openai` |
 | `CARTESIA_API_KEY` | Required when `TTS_PROVIDER=cartesia` |
-| `DISABLE_TTS` | Set to `true` to print lines only (saves TTS credits); multi-agent path only |
+| `DISABLE_TTS` | `true` = log lines only, no TTS (multi-agent path; saves provider credits) |
 
-Optional: `SERVER_PORT` for Express (default **3001**).
+Optional: **`SERVER_PORT`** for Express (default **3001**).
 
-**Never commit `.env`.** This repo ignores `**/.env` and only ships `.env.example` placeholders.
+**Never commit `.env`.** This repo ignores `**/.env` and only ships `.env.example`.
+
+---
+
+## HTTP API (Express)
+
+All routes are mounted at the **root** on the API server; the Vite dev server proxies **`/api/*`** → **`http://localhost:3001/*`** (see [`vite.config.ts`](vite.config.ts)).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/configure-room` | Body: `{ topic }`. Returns JSON: `roomMood`, `topicFraming`, `agents[]` (Claude-generated cast and UI metadata). |
+| `POST` | `/create-room` | Body: `{ topic, agents? }`. Mints a human token, spawns `multi_agent.py` for a new `agora-…` room, returns `roomName`, `token`, `wsUrl` / `livekitUrl`, and `agents` for the UI. |
+| `POST` | `/update-topic` | Body: `{ roomName, newTopic }`. Sends a command to the running agent process to update the discussion topic. |
+| `DELETE` | `/room/:roomName` | Stops the agent subprocess for that room (called when you leave from the UI). |
+
+---
+
+## Frontend (high level)
+
+| Area | Role |
+|------|------|
+| [`src/App.jsx`](src/App.jsx) | Phases: entry → configuring → preview → room; wires API calls and session state. |
+| [`src/components/EntryScreen.jsx`](src/components/EntryScreen.jsx) | Topic capture and onboarding narrative. |
+| [`src/components/PreviewScreen.jsx`](src/components/PreviewScreen.jsx) | Cast review, edit, regenerate, launch. |
+| [`src/components/Room.jsx`](src/components/Room.jsx) | LiveKit connection, mic, layout, transcript panel, agent presences. |
+| [`src/components/AgentPresence.jsx`](src/components/AgentPresence.jsx) | Per-agent motion and speaking / thinking visuals. |
+| [`src/components/TopicObject.jsx`](src/components/TopicObject.jsx) | In-room topic display and topic updates via API. |
+| [`src/hooks/useDiscussionState.js`](src/hooks/useDiscussionState.js) | LiveKit data messages → transcript, captions, per-agent UI state. |
+| [`src/lib/layoutAgents.js`](src/lib/layoutAgents.js) | Positions agent cards in the room view. |
+
+Stack: **React 19**, **LiveKit Components**, **Framer Motion**, **Tailwind CSS 4**, **Vite 8**.
 
 ---
 
 ## Manual dev (without `start.sh`)
 
-If you prefer separate terminals:
-
 ```bash
-# Terminal 1 — API (from repo root)
-cd backend && npm install
-node server.js
+# Terminal 1 — API (repo root or backend)
+cd backend && npm install && node server.js
 
 # Terminal 2 — frontend
-npm install && npm run dev
+cd /path/to/Agora && npm install && npm run dev
 ```
 
-Ensure `backend/.venv` exists and `pip install -r backend/requirements.txt` has been run; `server.js` spawns `multi_agent.py` with that interpreter when you create a room from the UI.
+Ensure **`backend/.venv`** exists and **`pip install -r backend/requirements.txt`** has been run; `server.js` spawns `multi_agent.py` with that interpreter when you create a room from the UI.
 
 ---
 
@@ -118,12 +160,15 @@ Ensure `backend/.venv` exists and `pip install -r backend/requirements.txt` has 
 
 | Path | Role |
 |------|------|
-| [`src/`](src/) | React UI (LiveKit Components, Framer Motion, Tailwind) |
-| [`backend/server.js`](backend/server.js) | REST: create room, mint token, spawn agents, teardown |
-| [`backend/multi_agent.py`](backend/multi_agent.py) | Multi-agent orchestration, STT/LLM/TTS |
+| [`src/`](src/) | React app |
+| [`backend/server.js`](backend/server.js) | Express: configure room, create room, update topic, mint token, spawn/stop agents |
+| [`backend/multi_agent.py`](backend/multi_agent.py) | Multi-agent orchestration, STT / LLM / TTS |
+| [`backend/discussion_state.py`](backend/discussion_state.py) | Shared discussion state for agents |
+| [`backend/config.py`](backend/config.py) | Default Edge / Sage / Spark definitions and `agents_for_api()` |
 | [`backend/launch.py`](backend/launch.py) | CLI entry for fixed-room / local workflows |
-| [`backend/agent.py`](backend/agent.py) | Single LiveKit worker agent (**Edge** only) |
-| [`backend/README.md`](backend/README.md) | Deep dive: Playground, `join_room.html`, `mint_token.py`, billing tips |
+| [`backend/agent.py`](backend/agent.py) | Single LiveKit worker (**Edge** only) for Playground-style tests |
+| [`start.sh`](start.sh) | One-shot dev bootstrap |
+| [**backend/README.md**](backend/README.md) | Playground, `join_room.html`, `mint_token.py`, idle timeout, `DISABLE_TTS`, billing notes |
 
 ---
 
@@ -132,15 +177,15 @@ Ensure `backend/.venv` exists and `pip install -r backend/requirements.txt` has 
 | Command | Description |
 |---------|-------------|
 | `./start.sh` | Install deps, start API + Vite |
-| `npm run dev` | Frontend only (API must be up for full flow) |
+| `npm run dev` | Frontend only (API must be running for full flow) |
 | `npm run build` | Production build |
 | `npm run lint` | ESLint |
 
 ---
 
-## Contributing & security
+## Contributing and security
 
-If you open a PR, double-check that no real keys are in the diff. Rotate any key that has ever appeared in a commit or public issue.
+Do not commit real API keys. Rotate any key that has appeared in a public commit or issue.
 
 ---
 

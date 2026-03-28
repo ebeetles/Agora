@@ -1,8 +1,8 @@
-# Agora – Edge Agent Backend
+# Agora – Backend and agents
 
-A LiveKit voice agent that joins a room as **Edge**, a sharp skeptical thinker who debates whether college is worth it.
+This folder powers **Agora**: multi-agent LiveKit voice discussions (**Deepgram STT → Anthropic Claude → OpenAI or Cartesia TTS**). The main **web app** (repo root) calls `server.js`, which spawns **`multi_agent.py`** per room with a topic and optional AI-designed cast.
 
-Pipeline: **Deepgram STT → Anthropic Claude Sonnet → Cartesia TTS**
+**`agent.py`** is a separate, smaller path: a single LiveKit worker that joins as **Edge** only — useful for [Agents Playground](https://agents-playground.livekit.io) and quick mic tests, not the full product UI.
 
 ## Intended behavior
 
