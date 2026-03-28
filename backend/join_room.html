@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agora — join discussion</title>
+    <style>
+      :root {
+        font-family: system-ui, sans-serif;
+        background: #0e0e0e;
+        color: #eee;
+      }
+      body {
+        max-width: 36rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin: 1rem 0 0.35rem;
+        font-size: 0.85rem;
+        color: #aaa;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid #333;
+        border-radius: 6px;
+        background: #1a1a1a;
+        color: #fff;
+      }
+      button {
+        margin-top: 1.25rem;
+        margin-right: 0.5rem;
+        padding: 0.55rem 1rem;
+        border: none;
+        border-radius: 6px;
+        background: #3d5a80;
+        color: #fff;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      #status {
+        margin-top: 1rem;
+        font-size: 0.9rem;
+        color: #8ab;
+      }
+      code {
+        font-size: 0.85em;
+        background: #222;
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+      }
+      .hint {
+        font-size: 0.85rem;
+        color: #888;
+        margin-top: 1.5rem;
+        line-height: 1.5;
+      }
+      #remote-audio {
+        margin-top: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Join Agora (listen + speak)</h1>
+    <p class="hint">
+      Start <code>python launch.py</code> first. The agents stay quiet until
+      <strong>you</strong> connect here — then Edge opens the discussion. Your token
+      must allow room <code>agora-discussion</code>. Use any identity
+      <strong>except</strong> <code>edge</code>, <code>sage</code>, or
+      <code>spark</code>.
+    </p>
+
+    <label for="url">LiveKit URL (<code>wss://…</code>)</label>
+    <input id="url" type="text" placeholder="wss://your-project.livekit.cloud" autocomplete="off" />
+
+    <label for="token">Access token (JWT)</label>
+    <input id="token" type="password" placeholder="paste token from lk token create …" autocomplete="off" />
+
+    <button type="button" id="connect">Connect &amp; enable mic</button>
+    <button type="button" id="disconnect" disabled>Disconnect</button>
+    <p id="status">Disconnected.</p>
+    <div id="remote-audio" aria-live="polite"></div>
+
+    <script type="module">
+      import { Room, RoomEvent } from "https://esm.sh/livekit-client@2.15.4";
+
+      const urlEl = document.getElementById("url");
+      const tokenEl = document.getElementById("token");
+      const connectBtn = document.getElementById("connect");
+      const disconnectBtn = document.getElementById("disconnect");
+      const statusEl = document.getElementById("status");
+      const remoteEl = document.getElementById("remote-audio");
+
+      let room = null;
+
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+      }
+
+      function attachRemoteAudio(track, participant) {
+        if (track.kind !== "audio") return;
+        const el = track.attach();
+        el.autoplay = true;
+        el.playsInline = true;
+        el.dataset.participant = participant.identity;
+        el.style.display = "block";
+        el.style.width = "100%";
+        el.style.marginTop = "0.5rem";
+        remoteEl.appendChild(el);
+        el.play().catch(() => {});
+      }
+
+      connectBtn.addEventListener("click", async () => {
+        const wsUrl = urlEl.value.trim();
+        const token = tokenEl.value.trim();
+        if (!wsUrl || !token) {
+          setStatus("Enter LiveKit URL and token.");
+          return;
+        }
+
+        connectBtn.disabled = true;
+        setStatus("Connecting…");
+
+        room = new Room({ adaptiveStream: true, dynacast: true });
+
+        room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+          attachRemoteAudio(track, participant);
+        });
+
+        room.on(RoomEvent.TrackUnsubscribed, (track) => {
+          track.detach().forEach((el) => el.remove());
+        });
+
+        try {
+          await room.connect(wsUrl, token);
+          await room.localParticipant.setMicrophoneEnabled(true);
+          setStatus(
+            "Connected — mic on. You should hear agents when they speak.",
+          );
+          disconnectBtn.disabled = false;
+        } catch (e) {
+          console.error(e);
+          setStatus("Error: " + (e.message || String(e)));
+          connectBtn.disabled = false;
+          room = null;
+        }
+      });
+
+      disconnectBtn.addEventListener("click", async () => {
+        if (!room) return;
+        disconnectBtn.disabled = true;
+        await room.disconnect();
+        room = null;
+        remoteEl.innerHTML = "";
+        setStatus("Disconnected.");
+        connectBtn.disabled = false;
+      });
+    </script>
+  </body>
+</html>
