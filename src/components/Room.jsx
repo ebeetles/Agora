@@ -1,6 +1,7 @@
 import {
   LiveKitRoom,
   RoomAudioRenderer,
+  useIsSpeaking,
   useLocalParticipant,
   useRoomContext,
 } from '@livekit/components-react'
@@ -43,6 +44,115 @@ function ChevronRight() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M9 18l6-6-6-6" />
     </svg>
+  )
+}
+
+// ─── User presence (distinct from agent cards: compact tile + voice rings) ───
+
+const USER_AVATAR_SIZE = 56
+const USER_VOICE_GLOW = '0 0 22px rgba(95, 200, 210, 0.45)'
+
+function UserSilhouetteIcon({ muted }) {
+  const stroke = muted ? '#6a6a6a' : '#353535'
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="8" r="3.25" stroke={stroke} strokeWidth="1.4" />
+      <path
+        d="M5.5 19.5v-.4c0-2.35 1.9-4.25 4.25-4.25h4.5c2.35 0 4.25 1.9 4.25 4.25v.4"
+        stroke={stroke}
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function UserAvatar({ micOn, localParticipant }) {
+  const isSpeaking = useIsSpeaking(localParticipant)
+  const voiceActive = micOn && isSpeaking
+  const r = 16
+
+  return (
+    <div
+      className="relative flex items-center justify-center"
+      style={{
+        width: USER_AVATAR_SIZE + 16,
+        height: USER_AVATAR_SIZE + 16,
+      }}
+    >
+      {voiceActive ? (
+        <>
+          <motion.span
+            className="pointer-events-none absolute"
+            style={{
+              width: USER_AVATAR_SIZE,
+              height: USER_AVATAR_SIZE,
+              borderRadius: r,
+              border: '2px solid rgba(120, 215, 225, 0.65)',
+              left: '50%',
+              top: '50%',
+              marginLeft: -USER_AVATAR_SIZE / 2,
+              marginTop: -USER_AVATAR_SIZE / 2,
+            }}
+            initial={{ scale: 1, opacity: 0.65 }}
+            animate={{ scale: 1.42, opacity: 0 }}
+            transition={{ duration: 0.95, repeat: Infinity, ease: 'easeOut' }}
+          />
+          <motion.span
+            className="pointer-events-none absolute"
+            style={{
+              width: USER_AVATAR_SIZE,
+              height: USER_AVATAR_SIZE,
+              borderRadius: r,
+              border: '1.5px solid rgba(140, 220, 230, 0.4)',
+              left: '50%',
+              top: '50%',
+              marginLeft: -USER_AVATAR_SIZE / 2,
+              marginTop: -USER_AVATAR_SIZE / 2,
+            }}
+            initial={{ scale: 1, opacity: 0.5 }}
+            animate={{ scale: 1.42, opacity: 0 }}
+            transition={{ duration: 0.95, repeat: Infinity, ease: 'easeOut', delay: 0.4 }}
+          />
+        </>
+      ) : null}
+
+      <motion.div
+        className="relative flex items-center justify-center"
+        style={{
+          width: USER_AVATAR_SIZE,
+          height: USER_AVATAR_SIZE,
+          borderRadius: r,
+          background: micOn
+            ? 'linear-gradient(155deg, #efefef 0%, #d6d6d6 55%, #cacaca 100%)'
+            : 'linear-gradient(155deg, #3d3d3d 0%, #2c2c2c 100%)',
+          border: '1px solid',
+          borderColor: micOn ? '#1f1f1f' : '#0d0d0d',
+        }}
+        animate={
+          voiceActive
+            ? {
+                boxShadow: [
+                  USER_VOICE_GLOW,
+                  '0 0 28px rgba(95, 200, 210, 0.65)',
+                  USER_VOICE_GLOW,
+                ],
+              }
+            : {
+                boxShadow: micOn
+                  ? 'inset 0 1px 0 rgba(255,255,255,0.35), 0 3px 10px rgba(0,0,0,0.4)'
+                  : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 2px 8px rgba(0,0,0,0.55)',
+              }
+        }
+        transition={
+          voiceActive
+            ? { duration: 0.55, repeat: Infinity, ease: 'easeInOut' }
+            : { duration: 0.25 }
+        }
+      >
+        <UserSilhouetteIcon muted={!micOn} />
+      </motion.div>
+    </div>
   )
 }
 
@@ -271,24 +381,6 @@ function RoomCanvas({ session, onLeave }) {
   const [userCaption, setUserCaption] = useState('')
   const captionTimerRef = useRef(null)
 
-  const [offsetTransition, setOffsetTransition] = useState({
-    type: 'tween',
-    duration: 2,
-    ease: 'easeInOut',
-  })
-  const prevPulseRef = useRef(0)
-
-  useEffect(() => {
-    if (topicPulseKey > prevPulseRef.current) {
-      prevPulseRef.current = topicPulseKey
-      setOffsetTransition({ type: 'tween', duration: 1.5, ease: 'easeInOut' })
-      const t = window.setTimeout(() => {
-        setOffsetTransition({ type: 'tween', duration: 2, ease: 'easeInOut' })
-      }, 1600)
-      return () => clearTimeout(t)
-    }
-  }, [topicPulseKey])
-
   useEffect(() => {
     localParticipant.setMicrophoneEnabled(micOn).catch(() => {})
   }, [micOn, localParticipant])
@@ -319,11 +411,11 @@ function RoomCanvas({ session, onLeave }) {
 
   const layouts = useMemo(() => layoutAgentPresences(agents.length), [agents.length])
 
-  // Left-percent of the currently-speaking agent, used for directional reaction tilt
-  const speakerLeftPct = useMemo(() => {
+  // Full layout of the currently-speaking agent — used for drift direction + reaction tilt
+  const speakerLayout = useMemo(() => {
     const idx = agents.findIndex((a) => getAgentSlice(a.name).isSpeaking)
     if (idx < 0) return null
-    return (layouts[idx] || layouts[layouts.length - 1]).leftPct
+    return layouts[idx] || layouts[layouts.length - 1]
   }, [agents, layouts, getAgentSlice])
 
   const publishUserText = useCallback(
@@ -388,8 +480,7 @@ function RoomCanvas({ session, onLeave }) {
             layout={layouts[i] || layouts[layouts.length - 1]}
             slice={getAgentSlice(agent.name)}
             entryIndex={i}
-            offsetTransition={offsetTransition}
-            speakerLeftPct={speakerLeftPct}
+            speakerLayout={speakerLayout}
           />
         ))}
       </div>
@@ -401,15 +492,7 @@ function RoomCanvas({ session, onLeave }) {
       >
         <div className="relative">
           <UserCaption text={userCaption} />
-          <div
-            style={{
-              width: 52,
-              height: 52,
-              borderRadius: '50%',
-              backgroundColor: '#e0e0e0',
-              border: '0.5px solid #333',
-            }}
-          />
+          <UserAvatar micOn={micOn} localParticipant={localParticipant} />
         </div>
         <span
           className="mt-2 text-[11px]"

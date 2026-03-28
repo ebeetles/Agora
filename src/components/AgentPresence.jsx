@@ -19,12 +19,15 @@ const ENERGY_MAP = {
 }
 
 const PRESENCE_WIDTH = { contained: 115, balanced: 130, expansive: 148 }
-const TEMP_BG       = { cool: '#161820', warm: '#1a1816', neutral: '#181818' }
+const TEMP_BG        = { cool: '#161820', warm: '#1a1816', neutral: '#181818' }
+
+// Drift transition — shared by all agents, matches spec (2s ease-in-out)
+const DRIFT_TRANSITION = { type: 'tween', duration: 2, ease: 'easeInOut' }
 
 // ─── Agent card ───────────────────────────────────────────────────────────────
 
 function AgentCard({ agent, isSpeaking, isThinking, reactBump, reactDirection }) {
-  const vp   = agent.visualPersonality || {}
+  const vp = agent.visualPersonality || {}
   const {
     weight      = 'regular',
     energy      = 'moderate',
@@ -32,49 +35,46 @@ function AgentCard({ agent, isSpeaking, isThinking, reactBump, reactDirection })
     temperature = 'neutral',
   } = vp
 
-  const primaryColor   = agent.color        || '#7A9E87'
+  const primaryColor   = agent.color         || '#7A9E87'
   const secondaryColor = agent.secondaryColor || primaryColor
 
-  const fontWeight  = WEIGHT_MAP[weight]     || 400
-  const energyVars  = ENERGY_MAP[energy]     || ENERGY_MAP.moderate
-  const cardWidth   = PRESENCE_WIDTH[presence] || 160
-  const bgColor     = TEMP_BG[temperature]   || '#181818'
+  const fontWeight = WEIGHT_MAP[weight]        || 400
+  const energyVars = ENERGY_MAP[energy]        || ENERGY_MAP.moderate
+  const cardWidth  = PRESENCE_WIDTH[presence]  || 130
+  const bgColor    = TEMP_BG[temperature]      || '#181818'
 
   const { breathDuration, scaleMin, barDuration } = energyVars
 
-  const isItalic     = presence === 'expansive'
+  const isItalic      = presence === 'expansive'
   const letterSpacing = presence === 'contained' ? '-2px' : 'normal'
   const initialLetter = (agent.name || 'A')[0].toUpperCase()
 
-  // ── Card motion ────────────────────────────────────────────────────
+  // ── Card motion ──────────────────────────────────────────────────────
   let cardAnimate, cardTransition
   if (reactBump) {
-    const tiltDeg = reactDirection === 'right' ? 2 : -2
-    cardAnimate   = { rotate: tiltDeg, scale: 1 }
+    const tiltDeg  = reactDirection === 'right' ? 2 : -2
+    cardAnimate    = { rotate: tiltDeg, scale: 1 }
     cardTransition = {
       rotate: { duration: 0.15, ease: 'easeOut' },
       scale:  { duration: 0.15 },
     }
   } else if (isSpeaking || isThinking) {
-    cardAnimate   = { rotate: 0, scale: 1 }
+    cardAnimate    = { rotate: 0, scale: 1 }
     cardTransition = {
       rotate: { duration: 0.4, ease: 'easeOut' },
       scale:  { duration: 0.3 },
     }
   } else {
-    // idle breathing — the core personality-driven animation
-    cardAnimate   = { rotate: 0, scale: [scaleMin, 1.0, scaleMin] }
+    cardAnimate    = { rotate: 0, scale: [scaleMin, 1.0, scaleMin] }
     cardTransition = {
       rotate: { duration: 0.4, ease: 'easeOut' },
       scale:  { duration: breathDuration, repeat: Infinity, ease: 'easeInOut' },
     }
   }
 
-  // ── Accent bar opacity ─────────────────────────────────────────────
-  const accentOpacity = isThinking ? 0.3 : isSpeaking ? 1.0 : 0.65
-
-  // ── Letter pulse (thinking) ────────────────────────────────────────
-  const letterAnimate   = isThinking ? { opacity: [0.4, 1.0, 0.4] } : { opacity: 1 }
+  // ── Accent bar + letter states ───────────────────────────────────────
+  const accentOpacity    = isThinking ? 0.3 : isSpeaking ? 1.0 : 0.65
+  const letterAnimate    = isThinking ? { opacity: [0.4, 1.0, 0.4] } : { opacity: 1 }
   const letterTransition = isThinking
     ? { duration: breathDuration, repeat: Infinity, ease: 'easeInOut' }
     : { duration: 0.3 }
@@ -109,7 +109,6 @@ function AgentCard({ agent, isSpeaking, isThinking, reactBump, reactDirection })
         animate={{ opacity: accentOpacity }}
         transition={{ duration: 0.4 }}
       >
-        {/* Shimmer moves left→right only while speaking */}
         <AnimatePresence>
           {isSpeaking && (
             <motion.div
@@ -131,7 +130,7 @@ function AgentCard({ agent, isSpeaking, isThinking, reactBump, reactDirection })
       </motion.div>
 
       {/* ── Initial letter — centered at 45% down ── */}
-      {/* Wrapper occupies top 90% of card; flex centers the letter at 45% */}
+      {/* Container spans top 90% of card; flex centers letter at 45% of card */}
       <motion.div
         style={{
           position: 'absolute',
@@ -245,26 +244,25 @@ function AgentCard({ agent, isSpeaking, isThinking, reactBump, reactDirection })
   )
 }
 
-// ─── Full agent presence (card + caption) ────────────────────────────────────
+// ─── Agent presence ───────────────────────────────────────────────────────────
 
 export function AgentPresence({
   agent,
   layout,
   slice,
   entryIndex,
-  offsetTransition,
-  speakerLeftPct,
+  speakerLayout,   // still used for reaction-tilt direction
 }) {
-  const { leftPct, topPct, align } = layout
+  const { leftPct, topPct } = layout
 
   const streamingText = useMemo(
     () => slice.captionWords.join(''),
     [slice.captionWords],
   )
 
-  const [holdText, setHoldText] = useState('')
-  const [captionVisible, setCaptionVisible] = useState(true)
-  const [reactBump, setReactBump] = useState(false)
+  const [holdText, setHoldText]       = useState('')
+  const [captionVisible, setCaptionVisible] = useState(false)
+  const [reactBump, setReactBump]     = useState(false)
   const endTickRef = useRef(0)
 
   useEffect(() => {
@@ -273,7 +271,7 @@ export function AgentPresence({
       endTickRef.current = tick
       setHoldText(slice.lastCaptionFull)
       setCaptionVisible(true)
-      const tHold = window.setTimeout(() => setCaptionVisible(false), 2000)
+      const tHold  = window.setTimeout(() => setCaptionVisible(false), 2000)
       const tClear = window.setTimeout(() => setHoldText(''), 2500)
       return () => { clearTimeout(tHold); clearTimeout(tClear) }
     }
@@ -293,14 +291,11 @@ export function AgentPresence({
     return () => clearTimeout(t)
   }, [slice.reactTick])
 
-  // Determine tilt direction from speaker's position relative to this agent
+  // ── Tilt direction for react bump ───────────────────────────────────
   const reactDirection = useMemo(() => {
-    if (!reactBump || speakerLeftPct == null) return null
-    return speakerLeftPct < leftPct ? 'left' : 'right'
-  }, [reactBump, speakerLeftPct, leftPct])
-
-  const captionAlign =
-    align === 'left' ? 'text-left' : align === 'right' ? 'text-right' : 'text-center'
+    if (!reactBump || !speakerLayout) return null
+    return speakerLayout.leftPct < leftPct ? 'left' : 'right'
+  }, [reactBump, speakerLayout, leftPct])
 
   const words = streamingText
     ? streamingText.match(/\S+\s*/g) || []
@@ -310,35 +305,49 @@ export function AgentPresence({
 
   return (
     <motion.div
-      className="absolute flex flex-col items-center"
       style={{
+        position: 'absolute',
         left: `${leftPct}%`,
         top: `${topPct}%`,
+        // Center the anchor point on the base position
         translateX: '-50%',
         translateY: '-50%',
       }}
       initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: slice.offset.y, x: slice.offset.x }}
+      animate={{ opacity: 1, x: slice.offset.x, y: slice.offset.y }}
       transition={{
         opacity: { delay: entryIndex * 0.3, duration: 0.35 },
-        y: offsetTransition || { type: 'tween', duration: 2, ease: 'easeInOut' },
-        x: offsetTransition || { type: 'tween', duration: 2, ease: 'easeInOut' },
+        x: DRIFT_TRANSITION,
+        y: DRIFT_TRANSITION,
       }}
     >
-      <AgentCard
-        agent={agent}
-        isSpeaking={slice.isSpeaking}
-        isThinking={slice.isThinking}
-        reactBump={reactBump}
-        reactDirection={reactDirection}
-      />
+      {/*
+        Relative wrapper sized exactly to the card so that the caption
+        can use `position: absolute, top: 100%` without ever affecting
+        the card's own dimensions or layout position.
+      */}
+      <div style={{ position: 'relative' }}>
+        <AgentCard
+          agent={agent}
+          isSpeaking={slice.isSpeaking}
+          isThinking={slice.isThinking}
+          reactBump={reactBump}
+          reactDirection={reactDirection}
+        />
 
-      {/* Caption */}
-      <div
-        className={`mt-3 min-h-[2rem] max-w-[200px] ${captionAlign}`}
-        style={{ lineHeight: 1.5 }}
-      >
+        {/* ── Caption — floats below card, never reflows the card ── */}
         <motion.div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 8px)',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 200,
+            textAlign: 'center',
+            lineHeight: 1.5,
+            pointerEvents: 'none',
+            zIndex: 10,
+          }}
           animate={{ opacity: captionVisible ? 1 : 0 }}
           transition={{ duration: 0.5 }}
         >
@@ -346,8 +355,11 @@ export function AgentPresence({
             {words.map((w, i) => (
               <motion.span
                 key={`${slice.captionEndTick}-${i}-${w}`}
-                className="inline text-[11px]"
-                style={{ color: 'rgba(255,255,255,0.8)' }}
+                style={{
+                  display: 'inline',
+                  fontSize: 11,
+                  color: 'rgba(255,255,255,0.8)',
+                }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

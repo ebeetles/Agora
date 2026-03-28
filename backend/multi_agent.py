@@ -144,7 +144,52 @@ def _join_stream_segments(chunks: list[str]) -> str:
     return out.strip()
 
 
+def _glue_tts_segment_boundary(prev: str | None, seg: str) -> tuple[str, bool]:
+    """Insert a word boundary between consecutive TTS segments when missing.
+
+    Each segment is synthesized separately; without this, '...is' + 'that...'
+    becomes missing UI space and choppy prosody. Returns (adjusted_segment,
+    whether to publish a standalone space token before captions for this segment).
+    """
+    if not seg:
+        return seg, False
+    if not prev or not prev.strip():
+        return seg, False
+    p = prev.rstrip()
+    s = seg
+    if not s:
+        return seg, False
+    if p[-1].isspace() or s[0].isspace():
+        return seg, False
+    return (" " + seg, True)
+
+
+def _maybe_space_between_stream_chunks(buffer: str, delta: str) -> str:
+    """If the API glued two words across deltas, insert a space (letters only)."""
+    if not buffer or not delta:
+        return delta
+    if buffer[-1].isalpha() and delta[0].isalpha():
+        return " " + delta
+    return delta
+
+
+# Words in an agent's OWN speech that signal agreement with the previous speaker.
+# When detected, the agent drifts toward whoever they're agreeing with.
+_AGREE_WORDS: tuple[str, ...] = (
+    "agree", "exactly", "precisely", "absolutely", "you're right", "that's right",
+    "good point", "fair point", "building on", "yes and", "indeed", "true",
+    "spot on", "well said", "i think you", "that's a good", "that's fair",
+    "totally", "definitely", "you're onto", "i see that",
+)
+
+
 def _drift_pixels(from_id: str, to_id: str, magnitude: float) -> tuple[int, int]:
+    """Return (dx, dy) pixel offset — already the *absolute* target displacement.
+
+    The frontend treats this as a final offset from the base position, not an
+    additive delta.  Scale is chosen so ±30px is the practical max at full magnitude.
+    Negative magnitude reverses direction (drift *away* from to_id).
+    """
     fx, fy = _UI_POS.get(from_id, (0.5, 0.5))
     tx, ty = _USER_POS if to_id == "user" else _UI_POS.get(to_id, (0.5, 0.5))
     dxn, dyn = tx - fx, ty - fy
@@ -153,9 +198,10 @@ def _drift_pixels(from_id: str, to_id: str, magnitude: float) -> tuple[int, int]
     if magnitude < 0:
         ux, uy = -ux, -uy
         magnitude = abs(magnitude)
-    scale = 95.0
-    dx = int(max(-45, min(45, ux * magnitude * scale / 25.0)))
-    dy = int(max(-45, min(45, uy * magnitude * scale / 25.0)))
+    # scale tuned so magnitude=25 → ~30px along a diagonal (frontend MAX_DRIFT=30)
+    scale = 75.0
+    dx = int(max(-30, min(30, ux * magnitude * scale / 25.0)))
+    dy = int(max(-30, min(30, uy * magnitude * scale / 25.0)))
     return dx, dy
 
 logging.basicConfig(
@@ -165,7 +211,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("agora")
 
-HUMAN_IDLE_SECONDS = 20.0
+HUMAN_IDLE_SECONDS = 60.0
 _IDLE_POLL_SECONDS = 2.0
 # OpenAI TTS pcm + Cartesia both publish at 24 kHz mono in this pipeline.
 TTS_SAMPLE_RATE = 24000
@@ -178,6 +224,17 @@ INTERRUPTION_SIGNALS = (
     "one second", "what about", "sorry", "hang on", "yeah but",
     "okay but", "i think",
 )
+
+_TRAIL_OFF_MAX_WORDS = 4
+
+
+def _clamp_trail_off_words(text: str, max_words: int = _TRAIL_OFF_MAX_WORDS) -> str:
+    """Keep only a short spoken phrase for interruption landings."""
+    t = text.strip().strip('"').strip("'")
+    if not t:
+        return ""
+    words = t.split()
+    return " ".join(words[:max_words]) if words else ""
 
 
 def _env_truthy(name: str) -> bool:
@@ -287,8 +344,42 @@ class AgentWorker:
         )
         return response.content[0].text.strip()
 
+    async def generate_interrupt_trail_off(self, state: DiscussionState) -> str:
+        """Short LLM completion when the user interjects — only trail-off words."""
+        transcript = await state.format_transcript(15)
+        base = (
+            self._system_prompt_override
+            if self._system_prompt_override is not None
+            else self.config.system_prompt
+        )
+        completion_instruction = (
+            "\n\n--- INTERRUPTION (this message only) ---\n"
+            "Stop immediately and say only a natural 2 to 3 word trail-off that "
+            "fits your personality before yielding. Examples: fair enough, go on, "
+            "interesting point, oh wait, right yes.\n"
+            "Do not continue your previous thought. Just land softly and stop.\n"
+            "Generate only the trail-off text — no quotes, no names, no preamble."
+        )
+        user = (
+            f"Recent conversation:\n{transcript}\n\n"
+            f"You were mid-utterance and the user interjected. "
+            "Output only your 2-3 word trail-off."
+        )
+        response = await self._llm.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=32,
+            system=base + completion_instruction,
+            messages=[{"role": "user", "content": user}],
+        )
+        raw = response.content[0].text.strip()
+        return _clamp_trail_off_words(raw, _TRAIL_OFF_MAX_WORDS)
+
     async def iter_sentence_segments(
-        self, state: DiscussionState, *, is_opener: bool = False
+        self,
+        state: DiscussionState,
+        *,
+        is_opener: bool = False,
+        interrupt_event: asyncio.Event | None = None,
     ) -> AsyncIterator[str]:
         """Stream Claude text and yield segments at natural boundaries for TTS."""
         system, user_content = await self._build_prompt(state, is_opener=is_opener)
@@ -300,16 +391,23 @@ class AgentWorker:
             messages=[{"role": "user", "content": user_content}],
         ) as stream:
             async for delta in stream.text_stream:
-                buffer += delta
+                if interrupt_event is not None and interrupt_event.is_set():
+                    break
+                buffer += _maybe_space_between_stream_chunks(buffer, delta)
                 while True:
+                    if interrupt_event is not None and interrupt_event.is_set():
+                        break
                     popped = _pop_next_segment(buffer)
                     if popped is None:
                         break
                     seg, buffer = popped
                     yield seg
-            tail = buffer.strip()
-            if tail:
-                yield tail
+                if interrupt_event is not None and interrupt_event.is_set():
+                    break
+            if interrupt_event is None or not interrupt_event.is_set():
+                tail = buffer.strip()
+                if tail:
+                    yield tail
 
     async def _openai_tts_pcm(self, text: str) -> bytes:
         assert self._openai is not None
@@ -533,6 +631,7 @@ class DiscussionOrchestrator:
         self._user_has_floor = False
         self._resume_timer: asyncio.Task[None] | None = None
         self._interruption_triggered = False
+        self._graceful_interrupt_event = asyncio.Event()
         # Humans in room (non-agent participants); pause turns when 0.
         self._human_count = 0
         # One STT pipeline per subscribed human audio track (avoid duplicates).
@@ -606,7 +705,7 @@ class DiscussionOrchestrator:
             )
         await self._broadcast_user_drift()
         self._user_has_floor = False
-        await self._post_user_statement()
+        await self._post_user_statement(entry.addressed_to)
 
     async def _broadcast_user_drift(self) -> None:
         for cfg in self._agent_configs:
@@ -621,31 +720,45 @@ class DiscussionOrchestrator:
         self, worker: AgentWorker, text: str, snap: StateSnapshot
     ) -> None:
         names = frozenset(a.name for a in self._agent_configs)
+        cur_low = text.lower()
+
+        # ── 1. Explicitly addressing another agent → drift toward them ──────
         target = detect_addressed(text, names)
         if target and target != worker.config.name:
             other = next(a for a in self._agent_configs if a.name == target)
-            mag = random.uniform(20.0, 35.0)
+            mag = random.uniform(20.0, 30.0)
             dx, dy = _drift_pixels(worker.config.identity, other.identity, mag)
             await self._publish_ui(
                 {"type": "agentMove", "agentName": worker.config.name, "dx": dx, "dy": dy}
             )
             return
+
         last = snap.last_entry
-        if last and last.speaker in names and last.speaker != worker.config.name:
-            cfg = self._configs[worker.config.name]
-            low = last.text.lower()
-            if any(k in low for k in cfg.disagree_triggers):
-                other = next(a for a in self._agent_configs if a.name == last.speaker)
-                mag = -random.uniform(15.0, 25.0)
-                dx, dy = _drift_pixels(worker.config.identity, other.identity, mag)
-                await self._publish_ui(
-                    {
-                        "type": "agentMove",
-                        "agentName": worker.config.name,
-                        "dx": dx,
-                        "dy": dy,
-                    }
-                )
+        if not (last and last.speaker in names and last.speaker != worker.config.name):
+            return
+
+        cfg = self._configs[worker.config.name]
+        last_low = last.text.lower()
+        other = next(a for a in self._agent_configs if a.name == last.speaker)
+
+        # ── 2. Previous speaker said something that triggers disagreement → drift away ──
+        if any(k in last_low for k in cfg.disagree_triggers):
+            mag = -random.uniform(15.0, 25.0)
+            dx, dy = _drift_pixels(worker.config.identity, other.identity, mag)
+            await self._publish_ui(
+                {"type": "agentMove", "agentName": worker.config.name, "dx": dx, "dy": dy}
+            )
+
+        # ── 3. Current agent agrees / builds on previous speaker → drift toward ──
+        elif (
+            any(k in cur_low for k in _AGREE_WORDS)
+            or any(k in cur_low for k in cfg.build_on_triggers)
+        ):
+            mag = random.uniform(12.0, 22.0)
+            dx, dy = _drift_pixels(worker.config.identity, other.identity, mag)
+            await self._publish_ui(
+                {"type": "agentMove", "agentName": worker.config.name, "dx": dx, "dy": dy}
+            )
 
     # ── main loop ────────────────────────────────────────────────────
 
@@ -1036,7 +1149,9 @@ class DiscussionOrchestrator:
                         if self._resume_timer and not self._resume_timer.done():
                             self._resume_timer.cancel()
                         self._user_has_floor = False
-                        asyncio.create_task(self._post_user_statement())
+                        asyncio.create_task(
+                            self._post_user_statement(entry.addressed_to)
+                        )
         except Exception:
             log.exception("STT stream error for %s", participant.identity)
         finally:
@@ -1054,15 +1169,12 @@ class DiscussionOrchestrator:
             return
 
         self._interruption_triggered = True
-        log.info("Interruption '%s' — cutting off %s", partial_text.strip(), speaker)
-
-        if self._active_turn_task and not self._active_turn_task.done():
-            self._active_turn_task.cancel()
-
-        if self._speaking_identity and self._speaking_identity in self.workers:
-            w = self.workers[self._speaking_identity]
-            if w._audio_source:
-                w._audio_source.clear_queue()
+        log.info(
+            "Interruption '%s' — graceful land for %s",
+            partial_text.strip(),
+            speaker,
+        )
+        self._graceful_interrupt_event.set()
 
         self._user_has_floor = True
 
@@ -1161,13 +1273,13 @@ class DiscussionOrchestrator:
         log.info("[orchestration] _evaluate_next_speaker (after inter-turn pause)")
         await self._evaluate_and_schedule()
 
-    async def _post_user_statement(self) -> None:
+    async def _post_user_statement(self, addressed_to: str | None = None) -> None:
         """Immediate evaluation after user finishes speaking (no pause)."""
         if self._idle_paused:
             return
         self._user_has_floor = False
         log.info("[orchestration] _evaluate_next_speaker (after user statement)")
-        await self._evaluate_and_schedule()
+        await self._evaluate_and_schedule(addressed_to=addressed_to)
 
     def _pick_next_speaker_name(
         self, scores: dict[str, float], snap: StateSnapshot
@@ -1194,7 +1306,9 @@ class DiscussionOrchestrator:
                 return alt, scores[alt]
         return best, scores[best]
 
-    async def _evaluate_and_schedule(self) -> None:
+    async def _evaluate_and_schedule(
+        self, addressed_to: str | None = None
+    ) -> None:
         """Pick the next agent and schedule _execute_turn. Runs continuously while humans are present."""
         if self._idle_paused or self._user_has_floor:
             log.info(
@@ -1210,23 +1324,17 @@ class DiscussionOrchestrator:
             )
             return
 
-        snap = await self.state.snapshot()
-
-        # Hard-lock: if the user directly addressed an agent by name, that agent
-        # always responds next — no scoring, no rotation.
-        if (
-            snap.last_entry is not None
-            and snap.last_entry.speaker == "You"
-            and snap.last_entry.addressed_to is not None
-        ):
-            addressed = snap.last_entry.addressed_to
+        # Hard-lock: the addressed_to value is passed in directly from the
+        # user statement handler, so it is immune to any race where a concurrent
+        # agent turn finishes and replaces history[-1] before snapshot() runs.
+        if addressed_to is not None:
             cfg_match = next(
-                (a for a in self._agent_configs if a.name == addressed), None
+                (a for a in self._agent_configs if a.name == addressed_to), None
             )
             if cfg_match:
                 log.info(
                     "[orchestration] user addressed %s directly — hard-selecting them",
-                    addressed,
+                    addressed_to,
                 )
                 worker = self.workers[cfg_match.identity]
                 if self._active_turn_task and not self._active_turn_task.done():
@@ -1235,6 +1343,8 @@ class DiscussionOrchestrator:
                     self._execute_turn(worker)
                 )
                 return
+
+        snap = await self.state.snapshot()
 
         scores: dict[str, float] = {}
         for cfg in self._agent_configs:
@@ -1303,6 +1413,7 @@ class DiscussionOrchestrator:
             if self._idle_paused or self._user_has_floor:
                 return
 
+            self._graceful_interrupt_event.clear()
             self._speaking_identity = worker.config.identity
             await self.state.set_speaker(worker.config.name)
             snap_pre = await self.state.snapshot()
@@ -1333,10 +1444,25 @@ class DiscussionOrchestrator:
                 async def produce_sentences() -> None:
                     try:
                         async for seg in worker.iter_sentence_segments(
-                            self.state, is_opener=is_opener
+                            self.state,
+                            is_opener=is_opener,
+                            interrupt_event=self._graceful_interrupt_event,
                         ):
                             await clear_thinking_once()
                             await sentence_q.put(seg)
+                        if self._graceful_interrupt_event.is_set():
+                            try:
+                                trail = await worker.generate_interrupt_trail_off(
+                                    self.state
+                                )
+                                if trail:
+                                    await clear_thinking_once()
+                                    await sentence_q.put(trail)
+                            except Exception:
+                                log.exception(
+                                    "[%s] interrupt trail-off failed",
+                                    worker.config.name,
+                                )
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -1364,21 +1490,30 @@ class DiscussionOrchestrator:
                 try:
                     if worker._tts_mode == "off":
                         _off_first = True
+                        prev_spoken = ""
                         while True:
                             seg = await sentence_q.get()
                             if seg is None:
                                 break
+                            adj, need_gap = _glue_tts_segment_boundary(
+                                prev_spoken, seg
+                            )
+                            tts_line = adj.strip()
                             if not _off_first:
                                 await asyncio.sleep(
                                     _INTER_SEGMENT_SILENCE_MS / 1000.0
                                 )
+                                if need_gap:
+                                    await publish_word(" ")
                             _off_first = False
-                            text_chunks.append(seg)
+                            text_chunks.append(adj)
                             await worker.speak_segment_with_captions(
-                                seg, publish_word
+                                tts_line, publish_word
                             )
+                            prev_spoken = tts_line
                     else:
                         try:
+                            prev_spoken = ""
                             while True:
                                 seg = await sentence_q.get()
                                 if seg is None:
@@ -1391,10 +1526,10 @@ class DiscussionOrchestrator:
                                             publish_word,
                                         )
                                     break
-                                text_chunks.append(seg)
-                                fetch_task = asyncio.create_task(
-                                    worker.fetch_segment_pcm(seg)
+                                adj, need_gap = _glue_tts_segment_boundary(
+                                    prev_spoken, seg
                                 )
+                                tts_line = adj.strip()
                                 if next_fetch is not None:
                                     pcm_prev = await next_fetch
                                     assert next_text is not None
@@ -1406,8 +1541,15 @@ class DiscussionOrchestrator:
                                     await worker._stream_silence_ms(
                                         _INTER_SEGMENT_SILENCE_MS
                                     )
+                                    if need_gap:
+                                        await publish_word(" ")
+                                text_chunks.append(adj)
+                                fetch_task = asyncio.create_task(
+                                    worker.fetch_segment_pcm(tts_line)
+                                )
                                 next_fetch = fetch_task
-                                next_text = seg
+                                next_text = tts_line
+                                prev_spoken = tts_line
                         finally:
                             if (
                                 next_fetch is not None

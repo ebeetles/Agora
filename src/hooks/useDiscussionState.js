@@ -1,7 +1,7 @@
 import { RoomEvent } from 'livekit-client'
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 
-const MAX_DRIFT = 45
+const MAX_DRIFT = 30
 
 function clampDrift(x, y) {
   const nx = Math.max(-MAX_DRIFT, Math.min(MAX_DRIFT, x))
@@ -82,11 +82,10 @@ function discussionReducer(state, action) {
       const { agentName, dx, dy } = action
       const per = { ...state.perAgent }
       const cur = { ...(per[agentName] || initAgentRecord()) }
-      if (dx === 0 && dy === 0) {
-        cur.offset = { x: 0, y: 0 }
-      } else {
-        cur.offset = clampDrift(cur.offset.x + dx, cur.offset.y + dy)
-      }
+      // Treat dx/dy as an absolute target offset, not an additive delta.
+      // The backend's _drift_pixels already returns a full displacement vector
+      // (±30px max) — accumulating it caused unbounded drift.
+      cur.offset = (dx === 0 && dy === 0) ? { x: 0, y: 0 } : clampDrift(dx, dy)
       per[agentName] = cur
       return { ...state, perAgent: per }
     }
