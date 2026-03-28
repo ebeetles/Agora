@@ -48,18 +48,29 @@ def detect_addressed(text: str, known_names: frozenset[str]) -> str | None:
 
 
 def _detect_addressed_impl(text: str, known_names: frozenset[str]) -> str | None:
+    """Return the agent name most specifically addressed in text, if any.
+
+    Sorts candidates longest-first so 'Samuel' doesn't get shadowed by 'Sam'.
+    Returns the earliest-occurring match in the text so 'Hey Marcus, not Lena'
+    resolves to Marcus.
+    """
     lower = text.lower()
-    for name in known_names:
-        # word-boundary-ish check: name surrounded by non-alpha
-        pos = lower.find(name.lower())
+    best_name: str | None = None
+    best_pos: int = len(lower) + 1
+
+    for name in sorted(known_names, key=len, reverse=True):
+        name_lower = name.lower()
+        pos = lower.find(name_lower)
         if pos == -1:
             continue
-        end = pos + len(name)
+        end = pos + len(name_lower)
         before_ok = pos == 0 or not lower[pos - 1].isalpha()
         after_ok = end >= len(lower) or not lower[end].isalpha()
-        if before_ok and after_ok:
-            return name
-    return None
+        if before_ok and after_ok and pos < best_pos:
+            best_pos = pos
+            best_name = name
+
+    return best_name
 
 
 class DiscussionState:

@@ -1108,8 +1108,13 @@ class DiscussionOrchestrator:
             score -= 0.4
 
         if last.speaker == "You":
-            if any(kw in last_lower for kw in cfg.user_align_triggers):
-                score += 0.6
+            if cfg.user_align_triggers:
+                if any(kw in last_lower for kw in cfg.user_align_triggers):
+                    score += 0.6
+            else:
+                # No triggers configured (custom agent) — apply a mild random
+                # boost so the conversation still feels responsive to user speech.
+                score += random.uniform(0.1, 0.4)
 
         # boost the third agent if two have been going back and forth
         pair, pair_count = self._consecutive_pair(snap)
@@ -1206,6 +1211,31 @@ class DiscussionOrchestrator:
             return
 
         snap = await self.state.snapshot()
+
+        # Hard-lock: if the user directly addressed an agent by name, that agent
+        # always responds next — no scoring, no rotation.
+        if (
+            snap.last_entry is not None
+            and snap.last_entry.speaker == "You"
+            and snap.last_entry.addressed_to is not None
+        ):
+            addressed = snap.last_entry.addressed_to
+            cfg_match = next(
+                (a for a in self._agent_configs if a.name == addressed), None
+            )
+            if cfg_match:
+                log.info(
+                    "[orchestration] user addressed %s directly — hard-selecting them",
+                    addressed,
+                )
+                worker = self.workers[cfg_match.identity]
+                if self._active_turn_task and not self._active_turn_task.done():
+                    self._active_turn_task.cancel()
+                self._active_turn_task = asyncio.create_task(
+                    self._execute_turn(worker)
+                )
+                return
+
         scores: dict[str, float] = {}
         for cfg in self._agent_configs:
             scores[cfg.name] = self._calculate_urgency(cfg.name, cfg, snap)

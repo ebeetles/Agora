@@ -1,227 +1,251 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-// ─── Abstract face configs ────────────────────────────────────────────────────
-// No face outline — just floating marks. Mouth paths share identical SVG command
-// structure (M + C) so Framer Motion can interpolate between them.
+// ─── Visual personality maps ──────────────────────────────────────────────────
 
-// Three abstract face presets — assigned by agent index, not by name
-const FACE_CONFIG_LIST = [
-  {
-    // Preset A: sharp raised arch on one side — skeptical asymmetry
-    leftBrow:  'M 23 33 C 26 28 33 27 38 29',
-    rightBrow: 'M 52 29 C 57 27 63 28 67 32',
-    leftEye:   { cx: 30, cy: 44, r: 5.5, pupilY: 0 },
-    rightEye:  { cx: 60, cy: 44, r: 5.5, pupilY: 0 },
-    mouth: {
-      resting:   'M 33 65 C 38 65 52 65 57 65',
-      talkOpen:  'M 33 63 C 38 70 52 70 57 63',
-      talkClose: 'M 33 64 C 38 67 52 67 57 64',
-    },
-  },
-  {
-    // Preset B: level brows, downward gaze — calm, measured
-    leftBrow:  'M 25 35 C 29 32 34 32 38 33',
-    rightBrow: 'M 52 33 C 56 32 61 32 65 35',
-    leftEye:   { cx: 31, cy: 47, r: 6,   pupilY: 1.5 },
-    rightEye:  { cx: 59, cy: 47, r: 6,   pupilY: 1.5 },
-    mouth: {
-      resting:   'M 34 66 C 38 67 52 67 56 66',
-      talkOpen:  'M 34 64 C 38 71 52 71 56 64',
-      talkClose: 'M 34 66 C 38 69 52 69 56 66',
-    },
-  },
-  {
-    // Preset C: high arched brows, upward gaze — open, energetic
-    leftBrow:  'M 20 33 C 24 27 31 26 37 28',
-    rightBrow: 'M 53 28 C 59 26 66 27 70 33',
-    leftEye:   { cx: 28, cy: 43, r: 6.5, pupilY: -1.5 },
-    rightEye:  { cx: 62, cy: 43, r: 6.5, pupilY: -1.5 },
-    mouth: {
-      resting:   'M 33 68 C 37 72 53 72 57 68',
-      talkOpen:  'M 33 64 C 37 73 53 73 57 64',
-      talkClose: 'M 33 66 C 37 71 53 71 57 66',
-    },
-  },
-]
-
-// ─── Abstract face SVG ───────────────────────────────────────────────────────
-
-function AbstractFace({ config, isSpeaking }) {
-  const { leftBrow, rightBrow, leftEye, rightEye, mouth } = config
-
-  return (
-    <svg
-      viewBox="0 0 90 90"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      style={{ width: '100%', height: 90, display: 'block' }}
-    >
-      {/* Brows */}
-      <path d={leftBrow}  stroke="#5a5a5a" strokeWidth="1.15" strokeLinecap="round" />
-      <path d={rightBrow} stroke="#565656" strokeWidth="1.05" strokeLinecap="round" />
-
-      {/* Left eye: filled circle with a lighter pupil highlight */}
-      <circle cx={leftEye.cx} cy={leftEye.cy} r={leftEye.r} fill="#444444" />
-      <circle
-        cx={leftEye.cx + 0.8}
-        cy={leftEye.cy + leftEye.pupilY - 0.9}
-        r={leftEye.r * 0.38}
-        fill="#666"
-      />
-
-      {/* Right eye */}
-      <circle cx={rightEye.cx} cy={rightEye.cy} r={rightEye.r} fill="#444444" />
-      <circle
-        cx={rightEye.cx + 0.8}
-        cy={rightEye.cy + rightEye.pupilY - 0.9}
-        r={rightEye.r * 0.38}
-        fill="#666"
-      />
-
-      {/* Mouth — morphs while speaking */}
-      <motion.path
-        d={mouth.resting}
-        animate={{
-          d: isSpeaking
-            ? [mouth.talkOpen, mouth.talkClose, mouth.talkOpen]
-            : mouth.resting,
-        }}
-        transition={{
-          d: isSpeaking
-            ? { duration: 0.38, repeat: Infinity, ease: 'easeInOut' }
-            : { duration: 0.28, ease: 'easeOut' },
-        }}
-        stroke="#545454"
-        strokeWidth="1.1"
-        strokeLinecap="round"
-        fill="none"
-      />
-    </svg>
-  )
+const WEIGHT_MAP = {
+  ultralight: 100,
+  light: 300,
+  regular: 400,
+  bold: 700,
+  heavy: 900,
 }
 
-// ─── Sound wave (below portrait) ─────────────────────────────────────────────
-
-function SoundWave({ color }) {
-  const bars = [
-    { heights: [2, 7, 2], duration: 0.46 },
-    { heights: [4, 8, 3], duration: 0.54 },
-    { heights: [2, 6, 2], duration: 0.50 },
-  ]
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 3, height: 10 }}>
-      {bars.map((b, i) => (
-        <motion.div
-          key={i}
-          style={{ width: 4, borderRadius: 2, backgroundColor: color }}
-          animate={{ height: b.heights.map((h) => `${h}px`) }}
-          transition={{ duration: b.duration, repeat: Infinity, delay: i * 0.13, ease: 'easeInOut' }}
-        />
-      ))}
-    </div>
-  )
+const ENERGY_MAP = {
+  still:    { breathDuration: 5,   scaleMin: 0.995, barDuration: 1.2 },
+  slow:     { breathDuration: 3.5, scaleMin: 0.97,  barDuration: 0.9 },
+  moderate: { breathDuration: 2.5, scaleMin: 0.96,  barDuration: 0.65 },
+  lively:   { breathDuration: 1.8, scaleMin: 0.94,  barDuration: 0.45 },
 }
+
+const PRESENCE_WIDTH = { contained: 115, balanced: 130, expansive: 148 }
+const TEMP_BG       = { cool: '#161820', warm: '#1a1816', neutral: '#181818' }
 
 // ─── Agent card ───────────────────────────────────────────────────────────────
 
-function AgentCard({ agent, agentIndex, isSpeaking, isThinking, reactBump }) {
-  const config = FACE_CONFIG_LIST[agentIndex % FACE_CONFIG_LIST.length]
+function AgentCard({ agent, isSpeaking, isThinking, reactBump, reactDirection }) {
+  const vp   = agent.visualPersonality || {}
+  const {
+    weight      = 'regular',
+    energy      = 'moderate',
+    presence    = 'balanced',
+    temperature = 'neutral',
+  } = vp
 
-  const borderStyle = isThinking
-    ? `0.5px dashed ${agent.color}77`
-    : isSpeaking
-      ? `1px solid ${agent.color}`
-      : '0.5px solid #2a2a2a'
+  const primaryColor   = agent.color        || '#7A9E87'
+  const secondaryColor = agent.secondaryColor || primaryColor
 
-  // Card animation: bob when speaking, slow drift when thinking, breathe when idle
+  const fontWeight  = WEIGHT_MAP[weight]     || 400
+  const energyVars  = ENERGY_MAP[energy]     || ENERGY_MAP.moderate
+  const cardWidth   = PRESENCE_WIDTH[presence] || 160
+  const bgColor     = TEMP_BG[temperature]   || '#181818'
+
+  const { breathDuration, scaleMin, barDuration } = energyVars
+
+  const isItalic     = presence === 'expansive'
+  const letterSpacing = presence === 'contained' ? '-2px' : 'normal'
+  const initialLetter = (agent.name || 'A')[0].toUpperCase()
+
+  // ── Card motion ────────────────────────────────────────────────────
   let cardAnimate, cardTransition
   if (reactBump) {
-    cardAnimate   = { rotate: -2, y: 0, scale: 1 }
-    cardTransition = { duration: 0.28, ease: 'easeOut' }
-  } else if (isSpeaking) {
-    cardAnimate   = { rotate: 0, y: [0, -6, 0], scale: 1 }
+    const tiltDeg = reactDirection === 'right' ? 2 : -2
+    cardAnimate   = { rotate: tiltDeg, scale: 1 }
     cardTransition = {
-      y:      { duration: 0.44, repeat: Infinity, ease: 'easeInOut' },
-      rotate: { duration: 0.15 },
+      rotate: { duration: 0.15, ease: 'easeOut' },
       scale:  { duration: 0.15 },
     }
-  } else if (isThinking) {
-    cardAnimate   = { rotate: 0, y: [0, -2, 0], scale: 1 }
+  } else if (isSpeaking || isThinking) {
+    cardAnimate   = { rotate: 0, scale: 1 }
     cardTransition = {
-      y:      { duration: 1.8, repeat: Infinity, ease: 'easeInOut' },
-      rotate: { duration: 0.15 },
-      scale:  { duration: 0.15 },
+      rotate: { duration: 0.4, ease: 'easeOut' },
+      scale:  { duration: 0.3 },
     }
   } else {
-    cardAnimate   = { rotate: 0, y: 0, scale: [0.98, 1, 0.98] }
+    // idle breathing — the core personality-driven animation
+    cardAnimate   = { rotate: 0, scale: [scaleMin, 1.0, scaleMin] }
     cardTransition = {
-      scale:  { duration: 3, repeat: Infinity, ease: 'easeInOut' },
-      rotate: { duration: 0.2 },
-      y:      { duration: 0.25 },
+      rotate: { duration: 0.4, ease: 'easeOut' },
+      scale:  { duration: breathDuration, repeat: Infinity, ease: 'easeInOut' },
     }
   }
+
+  // ── Accent bar opacity ─────────────────────────────────────────────
+  const accentOpacity = isThinking ? 0.3 : isSpeaking ? 1.0 : 0.65
+
+  // ── Letter pulse (thinking) ────────────────────────────────────────
+  const letterAnimate   = isThinking ? { opacity: [0.4, 1.0, 0.4] } : { opacity: 1 }
+  const letterTransition = isThinking
+    ? { duration: breathDuration, repeat: Infinity, ease: 'easeInOut' }
+    : { duration: 0.3 }
 
   return (
     <motion.div
       style={{
-        width: 90,
-        height: 110,
-        backgroundColor: '#141414',
-        borderRadius: 12,
-        border: borderStyle,
+        position: 'relative',
+        width: cardWidth,
+        height: 150,
+        backgroundColor: bgColor,
+        borderRadius: 20,
+        border: '0.5px solid #2a2a2a',
         overflow: 'hidden',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
         flexShrink: 0,
       }}
       animate={cardAnimate}
       transition={cardTransition}
     >
-      {/* Portrait — dims while thinking */}
+      {/* ── Top accent gradient bar ── */}
       <motion.div
-        style={{ width: '100%' }}
-        animate={isThinking ? { opacity: [0.65, 1, 0.65] } : { opacity: 1 }}
-        transition={
-          isThinking
-            ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' }
-            : { duration: 0.3 }
-        }
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 3,
+          background: `linear-gradient(90deg, ${primaryColor}, ${secondaryColor})`,
+          overflow: 'hidden',
+          borderRadius: '20px 20px 0 0',
+        }}
+        animate={{ opacity: accentOpacity }}
+        transition={{ duration: 0.4 }}
       >
-        <AbstractFace config={config} isSpeaking={isSpeaking} />
+        {/* Shimmer moves left→right only while speaking */}
+        <AnimatePresence>
+          {isSpeaking && (
+            <motion.div
+              key="shimmer"
+              style={{
+                position: 'absolute',
+                top: 0,
+                width: '50%',
+                height: '100%',
+                background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent)',
+              }}
+              initial={{ left: '-50%' }}
+              animate={{ left: '150%' }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: 'linear', repeatType: 'loop' }}
+            />
+          )}
+        </AnimatePresence>
       </motion.div>
 
-      {/* Sound wave zone */}
-      <div
+      {/* ── Initial letter — centered at 45% down ── */}
+      {/* Wrapper occupies top 90% of card; flex centers the letter at 45% */}
+      <motion.div
         style={{
-          height: 20,
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: '90%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          width: '100%',
+          pointerEvents: 'none',
+          userSelect: 'none',
+        }}
+        animate={letterAnimate}
+        transition={letterTransition}
+      >
+        <span
+          style={{
+            fontFamily: 'Georgia, "Times New Roman", serif',
+            fontSize: 54,
+            fontWeight,
+            color: primaryColor,
+            fontStyle: isItalic ? 'italic' : 'normal',
+            letterSpacing,
+            lineHeight: 1,
+          }}
+        >
+          {initialLetter}
+        </span>
+      </motion.div>
+
+      {/* ── Soundwave — above name, visible while speaking ── */}
+      <AnimatePresence>
+        {isSpeaking && !isThinking && (
+          <motion.div
+            key="wave"
+            style={{
+              position: 'absolute',
+              bottom: 30,
+              left: 0,
+              right: 0,
+              display: 'flex',
+              alignItems: 'flex-end',
+              justifyContent: 'center',
+              gap: 3,
+              height: 14,
+            }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+          >
+            {[[3, 14, 3], [8, 3, 14], [14, 8, 3]].map((heights, i) => (
+              <motion.div
+                key={i}
+                style={{ width: 3, borderRadius: 1.5, backgroundColor: primaryColor }}
+                animate={{ height: heights.map((h) => `${h}px`) }}
+                transition={{
+                  duration: barDuration,
+                  repeat: Infinity,
+                  delay: i * 0.12,
+                  ease: 'easeInOut',
+                }}
+              />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Agent name ── */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 16,
+          left: 0,
+          right: 0,
+          textAlign: 'center',
+          fontFamily: 'Georgia, "Times New Roman", serif',
+          fontSize: 13,
+          fontWeight: 400,
+          color: '#ffffff',
+          pointerEvents: 'none',
+          lineHeight: 1,
         }}
       >
-        <AnimatePresence>
-          {isSpeaking && !isThinking && (
-            <motion.div
-              key="wave"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.18 }}
-            >
-              <SoundWave color={agent.color} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {agent.name}
+      </div>
+
+      {/* ── Disposition ── */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 4,
+          left: '5%',
+          right: '5%',
+          textAlign: 'center',
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: 10,
+          fontStyle: 'italic',
+          color: '#777',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          lineHeight: 1,
+        }}
+      >
+        {agent.personality}
       </div>
     </motion.div>
   )
 }
 
-// ─── Full agent presence ──────────────────────────────────────────────────────
+// ─── Full agent presence (card + caption) ────────────────────────────────────
 
 export function AgentPresence({
   agent,
@@ -229,6 +253,7 @@ export function AgentPresence({
   slice,
   entryIndex,
   offsetTransition,
+  speakerLeftPct,
 }) {
   const { leftPct, topPct, align } = layout
 
@@ -264,9 +289,15 @@ export function AgentPresence({
   useEffect(() => {
     if (!slice.reactTick) return
     setReactBump(true)
-    const t = window.setTimeout(() => setReactBump(false), 300)
+    const t = window.setTimeout(() => setReactBump(false), 400)
     return () => clearTimeout(t)
   }, [slice.reactTick])
+
+  // Determine tilt direction from speaker's position relative to this agent
+  const reactDirection = useMemo(() => {
+    if (!reactBump || speakerLeftPct == null) return null
+    return speakerLeftPct < leftPct ? 'left' : 'right'
+  }, [reactBump, speakerLeftPct, leftPct])
 
   const captionAlign =
     align === 'left' ? 'text-left' : align === 'right' ? 'text-right' : 'text-center'
@@ -296,24 +327,11 @@ export function AgentPresence({
     >
       <AgentCard
         agent={agent}
-        agentIndex={entryIndex}
         isSpeaking={slice.isSpeaking}
         isThinking={slice.isThinking}
         reactBump={reactBump}
+        reactDirection={reactDirection}
       />
-
-      <p
-        className="mt-2 text-center text-[12px] text-white"
-        style={{ fontFamily: 'var(--font-serif), Georgia, serif', fontWeight: 400 }}
-      >
-        {agent.name}
-      </p>
-      <p
-        className="mt-0.5 max-w-[100px] truncate text-center text-[10px] text-[#555]"
-        title={agent.personality}
-      >
-        {agent.personality}
-      </p>
 
       {/* Caption */}
       <div

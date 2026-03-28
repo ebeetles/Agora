@@ -101,15 +101,15 @@ function HistoryPanel({ transcript, open, onOpen, onClose }) {
 
   return (
     <>
-      {/* Collapsed tab — fixed position wrapper handles centering (CSS transform is
-          not usable on motion elements — Framer Motion owns that property) */}
+      {/* Wrapper positions the tab at the right edge, vertically centered.
+          The outer div owns the CSS transform so Framer Motion's x animation
+          doesn't conflict with translateY(-50%). */}
       <div
         style={{
           position: 'fixed',
           right: 0,
           top: '50%',
-          transform: 'translateY(-50%)',
-          zIndex: 50,
+          zIndex: 60,
           pointerEvents: open ? 'none' : 'auto',
         }}
       >
@@ -122,18 +122,19 @@ function HistoryPanel({ transcript, open, onOpen, onClose }) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                width: 36,
-                height: 60,
-                backgroundColor: '#111',
+                width: 28,
+                height: 56,
+                marginTop: -28,
+                backgroundColor: '#1c1c1c',
                 borderRadius: '8px 0 0 8px',
-                border: '0.5px solid #252525',
+                border: '1px solid #383838',
                 borderRight: 'none',
-                color: '#444',
+                color: '#aaa',
                 cursor: 'pointer',
               }}
-              initial={{ opacity: 0, x: 36 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 36 }}
+              initial={{ x: 28 }}
+              animate={{ x: 0 }}
+              exit={{ x: 28 }}
               transition={{ duration: 0.22 }}
               aria-label="Open conversation history"
             >
@@ -318,6 +319,13 @@ function RoomCanvas({ session, onLeave }) {
 
   const layouts = useMemo(() => layoutAgentPresences(agents.length), [agents.length])
 
+  // Left-percent of the currently-speaking agent, used for directional reaction tilt
+  const speakerLeftPct = useMemo(() => {
+    const idx = agents.findIndex((a) => getAgentSlice(a.name).isSpeaking)
+    if (idx < 0) return null
+    return (layouts[idx] || layouts[layouts.length - 1]).leftPct
+  }, [agents, layouts, getAgentSlice])
+
   const publishUserText = useCallback(
     async (text) => {
       const t = text.trim()
@@ -381,6 +389,7 @@ function RoomCanvas({ session, onLeave }) {
             slice={getAgentSlice(agent.name)}
             entryIndex={i}
             offsetTransition={offsetTransition}
+            speakerLeftPct={speakerLeftPct}
           />
         ))}
       </div>

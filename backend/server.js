@@ -120,6 +120,12 @@ For each agent output the following fields:
 name — a real human first name only. Never a concept label like The Skeptic. Just Marcus, just Lena.
 disposition — maximum 5 words describing their essential quality. Sharp and economical.
 color — a muted hex color with personality. No bright or saturated colors. Each agent must have a visually distinct color from the others.
+secondaryColor — a second muted hex color that complements the primary color. Used for accent gradients. Should feel related but distinct — a cooler or warmer shade, or a subtle hue shift. Never identical to color.
+visualPersonality — an object derived directly from the agent's actual personality and speaking style. Do not assign these randomly. A sharp skeptical agent who speaks in short punchy sentences should be bold, still, contained, cool. An energetic creative connector should be regular, lively, expansive, warm. A calm philosophical thinker should be ultralight, slow, balanced, neutral. Fields:
+  weight — one of: ultralight, light, regular, bold, heavy. How assertive and forceful this agent is. Punchy debaters are bold or heavy. Contemplative thinkers are ultralight or light.
+  energy — one of: still, slow, moderate, lively. Their conversational energy and animation speed. Data-driven analytical types are still. Passionate advocates are lively.
+  presence — one of: contained, balanced, expansive. How much conceptual space they occupy. Minimalist precise speakers are contained. Big-picture visionary types are expansive.
+  temperature — one of: cool, neutral, warm. Their emotional register. Rationalists and skeptics are cool. Empathetic humanists are warm.
 systemPrompt — a full detailed second person system prompt written as you are [name]. Include: who they are and what shaped them in 3 sentences. Their core position on this specific topic and why. Exactly how they speak — sentence rhythm, length, whether they use data or stories or questions. How they relate to each other agent in the cast by name. Their blind spots — what they consistently miss or underweight. What makes them more animated, defensive, or curious. End every system prompt with these exact lines: Speak in 2 sentences maximum. You are in a live voice conversation. React to what was just said before making your own point. Never say you are an AI. Never use other agents names more than once per response.
 
 Also output these top level fields:
@@ -135,6 +141,13 @@ Respond only in valid JSON. No markdown fences. No explanation. Just the raw JSO
       "name": "string",
       "disposition": "string",
       "color": "string",
+      "secondaryColor": "string",
+      "visualPersonality": {
+        "weight": "ultralight | light | regular | bold | heavy",
+        "energy": "still | slow | moderate | lively",
+        "presence": "contained | balanced | expansive",
+        "temperature": "cool | neutral | warm"
+      },
       "systemPrompt": "string"
     }
   ]
@@ -163,15 +176,80 @@ app.post('/configure-room', async (req, res) => {
   }
 });
 
+async function fillMissingSystemPrompts(topic, agents) {
+  const incomplete = agents.filter((a) => !a.systemPrompt?.trim());
+  if (incomplete.length === 0) return agents;
+
+  const castSummary = agents
+    .map((a) => `- ${a.name}: ${a.disposition || 'no description given'}`)
+    .join('\n');
+
+  const filledMap = new Map();
+  await Promise.all(
+    incomplete.map(async (agent) => {
+      const prompt = `You are writing a system prompt for an AI discussion agent named ${agent.name} in Agora, a live voice discussion platform.
+
+Topic being discussed: ${topic}
+
+Full cast of agents in this room:
+${castSummary}
+
+${agent.name}'s disposition hint: ${agent.disposition || '(none given — invent a perspective that creates genuine tension with the rest of the cast)'}
+
+Write a full second-person system prompt for ${agent.name}. Include: who they are and what shaped them (3 sentences). Their core position on this specific topic and why. How they speak. How they relate to each other agent by name. Their blind spots. What makes them animated or defensive.
+
+End with exactly these lines:
+Speak in 2 sentences maximum. You are in a live voice conversation. React to what was just said before making your own point. Never say you are an AI. Never use other agents names more than once per response.
+
+Also, if the disposition hint is empty or too vague, invent a sharp 5-word-max disposition that contrasts with the other agents.
+
+Respond only with a JSON object with two fields: "systemPrompt" (string) and "disposition" (string, 5 words max). No markdown. No explanation.`;
+
+      try {
+        const msg = await anthropic.messages.create({
+          model: 'claude-sonnet-4-5',
+          max_tokens: 1024,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        let raw = msg.content[0].text.trim();
+        raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        const filled = JSON.parse(raw);
+        filledMap.set(agent.name, {
+          systemPrompt: filled.systemPrompt || '',
+          disposition: filled.disposition || agent.disposition || '',
+        });
+      } catch (err) {
+        console.error(`Failed to generate system prompt for ${agent.name}:`, err);
+        filledMap.set(agent.name, { systemPrompt: '', disposition: agent.disposition || '' });
+      }
+    }),
+  );
+
+  return agents.map((a) => {
+    const filled = filledMap.get(a.name);
+    if (!filled) return a;
+    return {
+      ...a,
+      systemPrompt: filled.systemPrompt || a.systemPrompt,
+      disposition: a.disposition?.trim() ? a.disposition : filled.disposition,
+    };
+  });
+}
+
 app.post('/create-room', async (req, res) => {
   const topic = String(req.body?.topic ?? '').trim();
   if (!topic) return res.status(400).json({ error: 'topic is required' });
 
-  const customAgents = req.body?.agents;
+  let customAgents = req.body?.agents ?? null;
   const roomName = `agora-${crypto.randomBytes(4).toString('hex')}`;
   const identity = `human-${crypto.randomBytes(3).toString('hex')}`;
 
   try {
+    // Fill in any agents the user manually added without a full system prompt
+    if (customAgents) {
+      customAgents = await fillMissingSystemPrompts(topic, customAgents);
+    }
+
     const token = await mintToken(identity, 'You', roomName);
     const agentsJson = customAgents ? JSON.stringify(customAgents) : null;
     const proc = spawnAgents(roomName, topic, agentsJson);
@@ -181,8 +259,10 @@ app.post('/create-room', async (req, res) => {
     const agentsForFrontend = customAgents
       ? customAgents.map((a) => ({
           name: a.name,
-          personality: a.disposition,
+          personality: a.disposition || '',
           color: a.color,
+          secondaryColor: a.secondaryColor,
+          visualPersonality: a.visualPersonality,
         }))
       : agentsPayload();
 
