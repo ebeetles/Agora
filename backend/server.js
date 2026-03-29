@@ -1,12 +1,9 @@
 /**
- * Agora API server
+ * Agora server
  *
- * POST /create-room  { topic: string }
- *   → spawns Python agent orchestrator, mints a LiveKit token for the human,
- *     returns { roomName, token, livekitUrl }
+ * API (JSON): mounted at /api — configure-room, create-room, update-topic, DELETE room/:roomName
  *
- * DELETE /room/:roomName
- *   → kills the agent process for that room
+ * When ../dist exists (production build), also serves the SPA and same-origin /api for the browser.
  */
 
 import 'dotenv/config';
@@ -28,7 +25,10 @@ const {
   LIVEKIT_API_SECRET,
   ANTHROPIC_API_KEY,
   SERVER_PORT = '3001',
+  PORT,
 } = process.env;
+
+const listenPort = Number(PORT || SERVER_PORT || '3001');
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
@@ -42,6 +42,8 @@ if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
 const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json());
+
+const api = express.Router();
 
 /** roomName → { proc: ChildProcess } */
 const rooms = new Map();
@@ -153,7 +155,7 @@ Respond only in valid JSON. No markdown fences. No explanation. Just the raw JSO
   ]
 }`;
 
-app.post('/configure-room', async (req, res) => {
+api.post('/configure-room', async (req, res) => {
   const topic = String(req.body?.topic ?? '').trim();
   if (!topic) return res.status(400).json({ error: 'topic is required' });
 
@@ -236,7 +238,7 @@ Respond only with a JSON object with two fields: "systemPrompt" (string) and "di
   });
 }
 
-app.post('/create-room', async (req, res) => {
+api.post('/create-room', async (req, res) => {
   const topic = String(req.body?.topic ?? '').trim();
   if (!topic) return res.status(400).json({ error: 'topic is required' });
 
@@ -279,7 +281,7 @@ app.post('/create-room', async (req, res) => {
   }
 });
 
-app.post('/update-topic', (req, res) => {
+api.post('/update-topic', (req, res) => {
   const roomName = String(req.body?.roomName ?? '').trim();
   const newTopic = String(req.body?.newTopic ?? '').trim();
   if (!roomName || !newTopic) {
@@ -301,7 +303,7 @@ app.post('/update-topic', (req, res) => {
   }
 });
 
-app.delete('/room/:roomName', (req, res) => {
+api.delete('/room/:roomName', (req, res) => {
   const { roomName } = req.params;
   const room = rooms.get(roomName);
   if (!room) return res.status(404).json({ error: 'room not found' });
@@ -311,6 +313,20 @@ app.delete('/room/:roomName', (req, res) => {
   console.log(`[${roomName}] deleted by client`);
   res.json({ ok: true });
 });
+
+app.use('/api', api);
+
+// ── static SPA (production: Express serves Vite build from ../dist) ─
+
+const distDir = join(__dirname, '..', 'dist');
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(join(distDir, 'index.html'));
+  });
+}
 
 // ── process cleanup ────────────────────────────────────────────────
 
@@ -327,6 +343,6 @@ process.on('SIGTERM', () => { cleanupAll(); process.exit(0); });
 
 // ── start ──────────────────────────────────────────────────────────
 
-app.listen(Number(SERVER_PORT), () => {
-  console.log(`Agora API server listening on http://localhost:${SERVER_PORT}`);
+app.listen(listenPort, '0.0.0.0', () => {
+  console.log(`Agora server listening on http://0.0.0.0:${listenPort}`);
 });

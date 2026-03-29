@@ -9,7 +9,7 @@ Under the hood: **Deepgram** (speech-to-text) → **Anthropic Claude** (reasonin
 ## What you do (end-to-end)
 
 1. **Landing** — Enter any topic (a decision, debate, or question). Optional example pills nudge you toward a first try.
-2. **Configure** — The app calls **`POST /configure-room`**. Claude proposes a **room mood**, **topic framing**, and a **cast** (each agent gets colors, a short disposition, visual personality axes for the UI, and a full system prompt).
+2. **Configure** — The app calls **`POST /api/configure-room`**. Claude proposes a **room mood**, **topic framing**, and a **cast** (each agent gets colors, a short disposition, visual personality axes for the UI, and a full system prompt).
 3. **Preview** — Review the lineup: **edit** names and dispositions, **add or remove** agents, or **regenerate** the whole room from the same topic. When you are ready, you **launch** the session.
 4. **Room** — The server creates a **unique LiveKit room**, spawns **`multi_agent.py`** with your topic and cast, and returns a **participant token**. You connect the **microphone**, hear the agents, and speak naturally. The UI syncs **speaking / thinking** state and **captions** from the agents via LiveKit data messages. You can **change the discussion topic** in place (the server forwards it to the Python process).
 
@@ -114,14 +114,50 @@ Optional: **`SERVER_PORT`** for Express (default **3001**).
 
 ## HTTP API (Express)
 
-All routes are mounted at the **root** on the API server; the Vite dev server proxies **`/api/*`** → **`http://localhost:3001/*`** (see [`vite.config.ts`](vite.config.ts)).
+REST handlers live under **`/api/*`**. In development, Vite proxies **`/api`** → **`http://localhost:3001`** (see [`vite.config.ts`](vite.config.ts)). In production (see **Deploy** below), the same Express process serves both **`/api`** and the static SPA.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/configure-room` | Body: `{ topic }`. Returns JSON: `roomMood`, `topicFraming`, `agents[]` (Claude-generated cast and UI metadata). |
-| `POST` | `/create-room` | Body: `{ topic, agents? }`. Mints a human token, spawns `multi_agent.py` for a new `agora-…` room, returns `roomName`, `token`, `wsUrl` / `livekitUrl`, and `agents` for the UI. |
-| `POST` | `/update-topic` | Body: `{ roomName, newTopic }`. Sends a command to the running agent process to update the discussion topic. |
-| `DELETE` | `/room/:roomName` | Stops the agent subprocess for that room (called when you leave from the UI). |
+| `POST` | `/api/configure-room` | Body: `{ topic }`. Returns JSON: `roomMood`, `topicFraming`, `agents[]` (Claude-generated cast and UI metadata). |
+| `POST` | `/api/create-room` | Body: `{ topic, agents? }`. Mints a human token, spawns `multi_agent.py` for a new `agora-…` room, returns `roomName`, `token`, `wsUrl` / `livekitUrl`, and `agents` for the UI. |
+| `POST` | `/api/update-topic` | Body: `{ roomName, newTopic }`. Sends a command to the running agent process to update the discussion topic. |
+| `DELETE` | `/api/room/:roomName` | Stops the agent subprocess for that room (called when you leave from the UI). |
+
+---
+
+## Deploy (share a public link)
+
+GitHub Pages only hosts **static** files; it cannot run Node or Python, so it cannot run this app end-to-end. To give people **one HTTPS URL** for the full experience (UI + API + agent processes), deploy a **single service** that includes:
+
+- the **built** React app (`npm run build` → `dist/`), and  
+- **`backend/server.js`** (which serves `dist/` when present and keeps **`/api`** on the same origin).
+
+### Option A — Docker (Railway, Render, Fly.io, etc.)
+
+1. Push this repo to GitHub.
+2. Create a new **Web Service** / **Deployment** from the repo and choose **Dockerfile** build (repository root).
+3. Set **environment variables** to match **`backend/.env.example`** (same keys as local: LiveKit, Deepgram, Anthropic, TTS provider keys, etc.). The platform usually injects **`PORT`**; the server listens on **`PORT`** or **`SERVER_PORT`** (default `3001`).
+4. Open the service **HTTPS URL** the platform assigns — that is the link you share.
+
+Local smoke test:
+
+```bash
+docker build -t agora .
+docker run --env-file backend/.env -p 8080:3001 -e PORT=3001 agora
+# visit http://localhost:8080 if you map host 8080 → container 3001; or -p 3001:3001
+```
+
+Adjust **`-p`** if the container listens on the port in **`PORT`** inside the image (default CMD uses `server.js`, which reads **`PORT`** from the environment).
+
+### Option B — Build on the host, run Node + Python yourself
+
+On any VPS with Node 18+, Python 3.10+, and process manager (systemd, PM2):
+
+1. `npm ci && npm run build` at repo root.  
+2. `cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && npm ci && node server.js`  
+3. Put TLS in front (Caddy, nginx + certbot, or Cloudflare Tunnel).
+
+Browsers need **HTTPS** (except on `localhost`) for reliable microphone access with LiveKit.
 
 ---
 
